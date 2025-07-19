@@ -91,16 +91,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc python-is-python3
-
       - name: Build kernel module
         run: |
           cd android-kernel
-          if [ ${{ github.event.inputs.android_version }} -le 12 ]; then
+          if [ ${{ github.event.inputs.android_version }} -le 13 ]; then
             BUILD_CONFIG=common/build.config.gki.${{ github.event.inputs.target_arch }} LTO=thin build/build.sh -j32
             OUTPUT_PATH="out/android${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}/dist"
           else
             echo "Using Bazel build system for Android ${{ github.event.inputs.android_version }}"
-            tools/bazel run --local_cpu_resources=50 --local_ram_resources=6144 //common:kernel_${{ github.event.inputs.target_arch }}_dist
+            tools/bazel run //common:kernel_${{ github.event.inputs.target_arch }}_dist
             OUTPUT_PATH="out/kernel_${{ github.event.inputs.target_arch }}"
           fi
           echo "OUTPUT_PATH=$OUTPUT_PATH" >> $GITHUB_ENV
