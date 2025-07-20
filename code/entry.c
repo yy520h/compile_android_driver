@@ -200,6 +200,7 @@ static int __init socket_server_init(void) {
     while (1) {
         ret = sock->ops->accept(sock, new_client_sock, 0, false);
         if (ret < 0) {
+            msleep(1000);
             break;
         }
         client_sock = new_client_sock;
@@ -209,6 +210,7 @@ static int __init socket_server_init(void) {
             current_port_index = (current_port_index + 1) % sizeof(port_pool);
             ret = open_socket();
             if (ret < 0) {
+                msleep(1000);
                 break;
             }
         }
