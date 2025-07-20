@@ -1,19 +1,19 @@
-name: Android Kernel Driver Builder
+name: Android内核驱动编译
 
 on:
   workflow_dispatch:
     inputs:
       android_version:
-        description: 'Android Version (Kernel) (e.g., 14)'
+        description: '安卓版本(10-15)'
         required: true
       kernel_version:
-        description: 'Kernel Version (e.g., 6.1)'
+        description: '内核版本(4.4-6.6)'
         required: true
       driver_name:
-        description: 'Driver Module Name (e.g., mydriver.ko)'
+        description: '驱动程序模块名称(mydriver.ko)'
         required: true
       target_arch:
-        description: 'Target Architecture (aarch64, x86_64, etc.)'
+        description: '目标架构 (aarch64, x86_64, etc.)'
         required: true
         default: 'aarch64'
 
@@ -98,7 +98,7 @@ jobs:
             BUILD_CONFIG=common/build.config.gki.${{ github.event.inputs.target_arch }} LTO=thin build/build.sh -j32
             OUTPUT_PATH="out/android${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}/dist"
           else
-            echo "Using Bazel build system for Android ${{ github.event.inputs.android_version }}"
+            echo "使用Bazel构建系统为Android ${{ github.event.inputs.android_version }}"
             tools/bazel run //common:kernel_${{ github.event.inputs.target_arch }}_dist
             OUTPUT_PATH="out/kernel_${{ github.event.inputs.target_arch }}"
           fi
