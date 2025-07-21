@@ -5,6 +5,10 @@
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/mm.h>
+#include <linux/module.h>
+#include <linux/tty.h>
+#include <linux/miscdevice.h>
+#include <linux/proc_fs.h>
 #include "comm.h"
 #include "memory.h"
 #include "process.h"
