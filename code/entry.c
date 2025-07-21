@@ -12,7 +12,7 @@
 #include "comm.h"
 #include "memory.h"
 #include "process.h"
-//static struct kprobe kp;
+
 #define OP_CMD_READ 601
 #define OP_CMD_WRITE 602
 #define OP_CMD_BASE 603
