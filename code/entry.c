@@ -14,14 +14,6 @@
 extern unsigned long kallsyms_lookup_name(const char *symbol_name);
 EXPORT_SYMBOL(kallsyms_lookup_name);
 
-// 定义 get_rand_str 函数
-char* get_rand_str(void) {
-    static char rand_str[32];
-    get_random_bytes(rand_str, sizeof(rand_str) - 1);
-    rand_str[sizeof(rand_str) - 1] = '\0';
-    return rand_str;
-}
-
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
     MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver); 
 #endif
