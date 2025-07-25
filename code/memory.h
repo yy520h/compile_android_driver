@@ -13,8 +13,7 @@
 #include <linux/path.h>
 #include <linux/dcache.h>
 #include <linux/module.h>
-#include <linux/highmem.h> // 添加 highmem 支持
-// phys_to_virt 读写方法  依赖于内核的固定映射，不会创建新的映射条目
+#include <linux/highmem.h>
 
 #define ARC_PATH_MAX 256
 
@@ -93,16 +92,16 @@ bool read_process_memory(pid_t pid, uintptr_t addr, void* user_buffer, size_t si
             goto error;
         }
 
-        va = (char*)phys_to_virt(pa); // 将物理地址转换为虚拟地址
+        va = (char*)phys_to_virt(pa);
         if (!va) {
             printk(KERN_ERR "phys_to_virt failed for physical address: 0x%lx\n", pa);
             goto error;
         }
 
         max = min_t(size_t, PAGE_SIZE - (addr & (PAGE_SIZE - 1)), min_t(size_t, size, PAGE_SIZE));
-        memcpy(buffer, va, max); // 从虚拟地址复制数据到内核缓冲区
+        memcpy(buffer, va, max);
 
-        if (copy_to_user(user_buffer, buffer, max)) { // 从内核缓冲区复制到用户缓冲区
+        if (copy_to_user(user_buffer, buffer, max)) {
             printk(KERN_ERR "copy_to_user failed\n");
             goto error;
         }
@@ -116,7 +115,6 @@ bool read_process_memory(pid_t pid, uintptr_t addr, void* user_buffer, size_t si
     mmput(mm);
     kfree(buffer);
 
-    // 根据读取的字节数来判断是否成功
     return count == total;
 error:
     mmput(mm);
@@ -161,19 +159,19 @@ bool write_process_memory(pid_t pid, uintptr_t addr, void* user_buffer, size_t s
             goto error;
         }
 
-        va = (char*)phys_to_virt(pa); // 将物理地址转换为虚拟地址
+        va = (char*)phys_to_virt(pa);
         if (!va) {
             printk(KERN_ERR "phys_to_virt failed for physical address: 0x%lx\n", pa);
             goto error;
         }
 
         max = min_t(size_t, PAGE_SIZE - (addr & (PAGE_SIZE - 1)), min_t(size_t, size, PAGE_SIZE));
-        if (copy_from_user(buffer, user_buffer, max)) { // 从用户缓冲区复制到内核缓冲区
+        if (copy_from_user(buffer, user_buffer, max)) {
             printk(KERN_ERR "copy_from_user failed\n");
             goto error;
         }
 
-        memcpy(va, buffer, max); // 从内核缓冲区复制到虚拟地址
+        memcpy(va, buffer, max);
 
         count += max;
         size -= max;
@@ -184,7 +182,6 @@ bool write_process_memory(pid_t pid, uintptr_t addr, void* user_buffer, size_t s
     mmput(mm);
     kfree(buffer);
 
-    // 根据写入的字节数来判断是否成功
     return count == total;
 error:
     mmput(mm);

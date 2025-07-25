@@ -6,8 +6,8 @@
 #include <linux/version.h>
 #include <linux/kprobes.h>
 #include <linux/kallsyms.h>
-#include "linux/sched/signal.h"
-#include "linux/types.h"
+#include <linux/sched/signal.h>
+#include <linux/types.h>
 #include <linux/sched.h>
 #include <linux/module.h>
 #include <linux/tty.h>
@@ -16,53 +16,53 @@
 #include <linux/version.h>
 #include <linux/sched.h>
 #include <linux/pid.h>
-#if(LINUX_VERSION_CODE >= KERNEL_VERSION(4,14,83))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,14,83))
 #include <linux/sched/mm.h>
 #endif
 #define ARC_PATH_MAX 256
 
-#include <linux/fs.h>    // For file and d_path
-#include <linux/path.h>  // For struct path
-#include <linux/dcache.h>// For d_path
+#include <linux/fs.h>
+#include <linux/path.h>
+#include <linux/dcache.h>
 #ifndef ARC_PATH_MAX
 #define ARC_PATH_MAX PATH_MAX
 #endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 static size_t get_module_base(pid_t pid, char* name)
 {
-	struct task_struct* task;
-	struct mm_struct* mm;
-	struct vm_area_struct *vma;
-	size_t count = 0;
-	char buf[ARC_PATH_MAX];
-	char *path_nm = NULL;
+    struct task_struct* task;
+    struct mm_struct* mm;
+    struct vm_area_struct *vma;
+    size_t count = 0;
+    char buf[ARC_PATH_MAX];
+    char *path_nm = NULL;
 
-	rcu_read_lock();
-	task = pid_task(find_vpid(pid), PIDTYPE_PID);
-	if (!task) {
-		rcu_read_unlock();
-		return 0;
-	}
-	rcu_read_unlock();
+    rcu_read_lock();
+    task = pid_task(find_vpid(pid), PIDTYPE_PID);
+    if (!task) {
+        rcu_read_unlock();
+        return 0;
+    }
+    rcu_read_unlock();
 
-	mm = get_task_mm(task);
-	if (!mm) {
-		return 0;
-	}
-	vma = find_vma(mm, 0);
-	while (vma) {
-		if (vma->vm_file) {
-			path_nm = d_path(&vma->vm_file->f_path, buf, ARC_PATH_MAX-1);
-			if (!IS_ERR(path_nm) && !strcmp(kbasename(path_nm), name)) {
-				count = (uintptr_t)vma->vm_start;
-				break;
-			}
-		}
-		if (vma->vm_end >= ULONG_MAX) break; // Prevent wrapping around
-		vma = find_vma(mm, vma->vm_end);
-	}
-	mmput(mm);
-	return count;
+    mm = get_task_mm(task);
+    if (!mm) {
+        return 0;
+    }
+    vma = find_vma(mm, 0);
+    while (vma) {
+        if (vma->vm_file) {
+            path_nm = d_path(&vma->vm_file->f_path, buf, ARC_PATH_MAX-1);
+            if (!IS_ERR(path_nm) && !strcmp(kbasename(path_nm), name)) {
+                count = (uintptr_t)vma->vm_start;
+                break;
+            }
+        }
+        if (vma->vm_end >= ULONG_MAX) break;
+        vma = find_vma(mm, vma->vm_end);
+    }
+    mmput(mm);
+    return count;
 }
 #else
 uintptr_t get_module_base(pid_t pid, const char *name)
@@ -100,21 +100,16 @@ uintptr_t get_module_base(pid_t pid, const char *name)
 
 pid_t get_process_pid(char *comm)
 {
-	struct task_struct *task;
-	for_each_process(task) {
-		if (task->comm == comm) {
-			return task->pid;
-		}
-	}
-	return 0;
+    struct task_struct *task;
+    for_each_process(task) {
+        if (task->comm == comm) {
+            return task->pid;
+        }
+    }
+    return 0;
 }
 
 
-
-
-
-
-//文件操作函数 打开文件
 int ovo_flip_open(const char *filename, int flags, umode_t mode, struct file **f) {
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
     *f = filp_open(filename, flags, mode);
@@ -133,7 +128,7 @@ int ovo_flip_open(const char *filename, int flags, umode_t mode, struct file **f
     return *f == NULL ? -2 : 0;
 #endif
 }
-//关闭文件
+
 int ovo_flip_close(struct file **f, fl_owner_t id) {
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
     filp_close(*f, id);
@@ -153,7 +148,6 @@ int ovo_flip_close(struct file **f, fl_owner_t id) {
 #endif
 }
 
-//检查指定路径的文件是否存在
 bool is_file_exist(const char *filename) {
     struct file* fp;
 
@@ -167,7 +161,7 @@ bool is_file_exist(const char *filename) {
 
     return false;
 }
-//检查一个进程是否仍然在运行
+
 int is_pid_alive(pid_t pid) {
     struct pid *pid_struct;
     struct task_struct *task;
@@ -182,7 +176,7 @@ int is_pid_alive(pid_t pid) {
 
     return pid_alive(task);
 }
-//将指定 PID 的进程标记为具有 root 权限。它通过修改进程的凭证结构体（ cred ）来提升进程的权限
+
 int mark_pid_root(pid_t pid) {
     static struct cred* (*my_prepare_creds)(void) = NULL;
 
@@ -225,9 +219,4 @@ int mark_pid_root(pid_t pid) {
     return 0;
 }
 
-
 #endif
-
-
-
-

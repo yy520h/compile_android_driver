@@ -30,10 +30,11 @@ static struct kprobe kp_input_event = {
 };
 
 static void handle_cache_events(struct input_dev *dev) {
+    int i;
     if (!pool->size) return;
 
     spin_lock(&dev->event_lock);
-    for (int i = 0; i < pool->size; ++i) {
+    for (i = 0; i < pool->size; ++i) {
         struct ovo_touch_event event = pool->events[i];
         input_event(dev, event.type, event.code, event.value);
     }
@@ -94,7 +95,7 @@ int input_event_cache(unsigned int type, unsigned int code, int value, struct ev
 
 int input_mt_report_slot_state_cache(unsigned int tool_type, bool active, int lock) {
     struct input_dev *dev = find_touch_device();
-    if (!dev || !dev->mt) return -EINVAL;
+    if (!dev) return -EINVAL;
 
     if (!active) {
         input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, -1, pool, lock);
@@ -103,7 +104,9 @@ int input_mt_report_slot_state_cache(unsigned int tool_type, bool active, int lo
 
     struct input_mt_slot *slot = &dev->mt->slots[dev->mt->slot];
     int id = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
-    if (id < 0) id = input_mt_new_trkid(dev->mt);
+    if (id < 0) {
+        id = input_mt_new_trkid(dev->mt);
+    }
 
     input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, id, pool, lock);
     input_event_cache(EV_KEY, BTN_TOUCH, 1, pool, lock);

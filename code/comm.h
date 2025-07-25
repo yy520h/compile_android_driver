@@ -32,7 +32,6 @@ enum OPERATIONS {
     OP_TOUCH_RELEASE = 0x807
 };
 
-// 触摸事件结构体定义，用于用户空间和内核空间的数据传递
 typedef struct {
     unsigned int type;
     unsigned int code;
@@ -44,7 +43,6 @@ char* get_rand_str(void);
 int dispatch_open(struct inode *node, struct file *file);
 int dispatch_close(struct inode *node, struct file *file);
 
-// 导出 kallsyms_lookup_name 函数以便其他模块可以使用
 extern unsigned long kallsyms_lookup_name(const char *symbol_name);
 
 #endif
