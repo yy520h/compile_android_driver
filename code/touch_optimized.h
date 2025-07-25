@@ -54,14 +54,16 @@ static int input_event_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 
 struct input_dev *find_touch_device(void) {
     static struct input_dev *device = NULL;
+    struct input_dev *dev = NULL;
+    struct list_head *input_dev_list = NULL;
+    struct mutex *input_mutex = NULL;
     if (device) return device;
 
-    struct input_dev *dev;
-    struct list_head *input_dev_list = (struct list_head *)kallsyms_lookup_name("input_dev_list");
-    struct mutex *input_mutex = (struct mutex *)kallsyms_lookup_name("input_mutex");
+    input_dev_list = (struct list_head *)kallsyms_lookup_name("input_dev_list");
+    input_mutex = (struct mutex *)kallsyms_lookup_name("input_mutex");
 
     if (!input_dev_list || !input_mutex) {
-        printk(KERN_ERR "Failed to find symbols!\n");
+        printk(KERN_ERR "找不到符号!\n");
         return NULL;
     }
 
