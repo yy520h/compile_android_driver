@@ -3,13 +3,13 @@
 #include <linux/miscdevice.h>
 #include <linux/proc_fs.h>
 #include <linux/kallsyms.h>
-#include <linux/module.h>
+#include <linux/version.h>
 #include "comm.h"
 #include "touch_optimized.h"
 #include "memory.h"
 #include "process.h"
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(,5 3, 0))
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
     MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver); 
 #endif
 
@@ -26,7 +26,7 @@ struct mem_tool_device {
     struct device *dev;
     int max;
 };
-static struct mem_device_tool *memdev;
+static struct mem_tool_device *memdev;
 static struct list_head *prev_module;
 static dev_t mem_tool_dev_t;
 static struct class *mem_tool_class;

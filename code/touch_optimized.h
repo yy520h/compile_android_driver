@@ -102,15 +102,9 @@ int input_mt_report_slot_state_cache(unsigned int tool_type, bool active, int lo
         return 0;
     }
 
-    struct input_mt_slot *slot = &dev->mt->slots[dev->mt->slot];
-    int id = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
-    if (id < 0) {
-        id = input_mt_new_trkid(dev->mt);
-    }
-
-    input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, id, pool, lock);
     input_event_cache(EV_KEY, BTN_TOUCH, 1, pool, lock);
-    return id;
+    input_event_cache(EV_SYN, SYN_REPORT, 0, pool, lock);
+    return 1;
 }
 
 int init_touch(void) {
