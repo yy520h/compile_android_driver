@@ -38,11 +38,30 @@ typedef struct {
     int value;
 } TouchEvent;
 
-char* get_rand_str(void);
+char* get_rand_str(void)
+{
+	static char string[10];
+	int lstr,seed,flag,i;
+	char *str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+	lstr = strlen(str);
+	for (i = 0; i < 6; i++)
+	{
+		get_random_bytes(&seed, sizeof(int));
+		flag = seed % lstr;
+		if (flag < 0)
+			flag = flag * -1;
+		string[i] = str[flag];
+	}
+	string[6] = '\0';
+	return string;
+}
+
 
 int dispatch_open(struct inode *node, struct file *file);
 int dispatch_close(struct inode *node, struct file *file);
 
+// 导出 kallsyms_lookup_name 函数
 extern unsigned long kallsyms_lookup_name(const char *symbol_name);
+EXPORT_SYMBOL(kallsyms_lookup_name);
 
 #endif

@@ -4,10 +4,23 @@
 #include <linux/proc_fs.h>
 #include <linux/kallsyms.h>
 #include <linux/version.h>
+#include <linux/random.h>  // 添加随机数头文件
 #include "comm.h"
 #include "touch_optimized.h"
 #include "memory.h"
 #include "process.h"
+
+// 导出 kallsyms_lookup_name 函数
+extern unsigned long kallsyms_lookup_name(const char *symbol_name);
+EXPORT_SYMBOL(kallsyms_lookup_name);
+
+// 定义 get_rand_str 函数
+char* get_rand_str(void) {
+    static char rand_str[32];
+    get_random_bytes(rand_str, sizeof(rand_str) - 1);
+    rand_str[sizeof(rand_str) - 1] = '\0';
+    return rand_str;
+}
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
     MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver); 
@@ -139,7 +152,7 @@ long dispatch_ioctl(struct file* const file, unsigned int const cmd, unsigned lo
 static int __init driver_entry(void) {
     int ret;
     devicename = DEVICE_NAME;
-    devicename = get_rand_str();
+    devicename = get_rand_str();  // 调用了我们定义的 get_rand_str 函数
 
     ret = alloc_chrdev_region(&mem_tool_dev_t, 0, 1, devicename);
     if (ret < 0) return ret;
