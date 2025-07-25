@@ -30,28 +30,28 @@ jobs:
           mkdir kerneldriver
           mv ./code/*.h ./code/*.c ./code/Makefile kerneldriver/
           
-      - name: Install repo tool
+      - name: Install repo tool 设置工具
         run: |
           sudo curl -L https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo
           sudo chmod a+x /usr/local/bin/repo
 
-      - name: Set up Android Kernel source
+      - name: Set up Android Kernel source 拉取源码
         run: |
           mkdir -p android-kernel && cd android-kernel
           repo init -u https://android.googlesource.com/kernel/manifest -b common-android${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}
           repo sync -j$(nproc) -c --no-tags --optimized-fetch --force-sync
 
-      - name: Copy kerneldriver
+      - name: Copy kerneldriver 创建文件夹
         run: |
           cd android-kernel
           cp -r ../kerneldriver common/drivers
 
-      - name: Modify Makefile
+      - name: Modify Makefile 配置环境
         run: |
           cd android-kernel
           echo "obj-y += kerneldriver/" >> common/drivers/Makefile
 
-      - name: Add module to GKI modules list
+      - name: Add module to GKI modules list 适配GKI
         if: ${{ github.event.inputs.android_version > 13 }}
         run: |
           cd android-kernel
@@ -76,7 +76,7 @@ jobs:
             { print }
           ' common/modules.bzl
           
-      - name: Prepare module list for legacy builds
+      - name: 为legacPrepare模块列表准备遗留buildsy构建的模块列表
         if: ${{ github.event.inputs.android_version <= 13 }}
         run: |
           cd android-kernel
@@ -91,7 +91,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc python-is-python3
-      - name: Build kernel module
+      - name: Build kernel module 开始编译
         run: |
           cd android-kernel
           if [ ${{ github.event.inputs.android_version }} -le 13 ]; then
