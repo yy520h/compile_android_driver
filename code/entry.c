@@ -2,10 +2,12 @@
 #include <linux/tty.h>
 #include <linux/miscdevice.h>
 #include <linux/proc_fs.h>
+#include <linux/kallsyms.h>
+#include <linux/module.h>
 #include "comm.h"
+#include "touch_optimized.h"
 #include "memory.h"
 #include "process.h"
-#include "touch_optimized.h"
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
     MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver); 

@@ -3,6 +3,8 @@
 
 #include <linux/slab.h>
 #include <linux/random.h>
+#include <linux/kallsyms.h>
+#include <linux/module.h>
 
 #define DEVICE_NAME "qwqbai"
 
