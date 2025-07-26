@@ -10,7 +10,7 @@ on:
         description: '内核版本(4.4-6.6)'
         required: true
       driver_name:
-        description: '驱动程序模块名称(hack.ko)'
+        description: '驱动程序模块名称(mydriver.ko)'
         required: true
       target_arch:
         description: '目标架构 (aarch64, x86_64, etc.)'
@@ -25,33 +25,33 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4.2.2
         
-      - name: 复制文件
+      - name: Prepare kerneldriver directory
         run: |
           mkdir kerneldriver
           mv ./code/*.h ./code/*.c ./code/Makefile kerneldriver/
           
-      - name: 配置环境工具repo
+      - name: Install repo tool
         run: |
           sudo curl -L https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo
           sudo chmod a+x /usr/local/bin/repo
 
-      - name: 开始拉取内核源码
+      - name: Set up Android Kernel source
         run: |
           mkdir -p android-kernel && cd android-kernel
           repo init -u https://android.googlesource.com/kernel/manifest -b common-android${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}
           repo sync -j$(nproc) -c --no-tags --optimized-fetch --force-sync
 
-      - name: 复制你的驱动文件到目录
+      - name: Copy kerneldriver
         run: |
           cd android-kernel
           cp -r ../kerneldriver common/drivers
 
-      - name: 设置环境
+      - name: Modify Makefile
         run: |
           cd android-kernel
           echo "obj-y += kerneldriver/" >> common/drivers/Makefile
 
-      - name: 适配编译 GKI
+      - name: Add module to GKI modules list
         if: ${{ github.event.inputs.android_version > 13 }}
         run: |
           cd android-kernel
@@ -59,8 +59,8 @@ jobs:
           
           awk -i inplace -v module="$MODULE_NAME" '
             BEGIN { added=0 }
-            /_COMMON_GKI_MODULES_LIST =  $$/ { in_list=1 }
-            in_list && /$$ / {
+            /_COMMON_GKI_MODULES_LIST = \[/ { in_list=1 }
+            in_list && /\]/ {
               if (!added) {
                 print "    \"" module "\","
                 added=1
@@ -76,22 +76,22 @@ jobs:
             { print }
           ' common/modules.bzl
           
-      - name: 适配13 系统以下的版本
+      - name: Prepare module list for legacy builds
         if: ${{ github.event.inputs.android_version <= 13 }}
         run: |
           cd android-kernel
           echo "drivers/kerneldriver/${{ github.event.inputs.driver_name }}" >> common/android/gki_aarch64_modules
-      - name: 修改缓冲区大小
+      - name: Increase stack frame size limit
         run: |
           cd android-kernel
           find . -type f -name "Makefile*" -exec sed -i 's/-Wframe-larger-than=[0-9]*/-Wframe-larger-than=4096/g' {} +
           grep -q "FRAME_WARN" common/Makefile || echo 'KBUILD_CFLAGS += -Wframe-larger-than=4096' >> common/Makefile
 
-      - name: 设置环境
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc python-is-python3
-      - name: 开始编译
+      - name: Build kernel module
         run: |
           cd android-kernel
           if [ ${{ github.event.inputs.android_version }} -le 13 ]; then
@@ -105,16 +105,9 @@ jobs:
           echo "OUTPUT_PATH=$OUTPUT_PATH" >> $GITHUB_ENV
         continue-on-error: true
       
-      - name: 编译结束开始尝试上传文件
-        id: upload_driver
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4.6.2
-        if: success() || failure()
         with:
           name: kernel-driver-${{ github.event.inputs.target_arch }}
           path: |
-            $(find android-kernel/${{ env.OUTPUT_PATH }} -type f -name "${{ github.event.inputs.driver_name }}" -o -name "${{ github.event.inputs.driver_name }}.*")
-      - name: 检查是否有输出目标.ko文件
-        if: failure() && steps.upload_driver.outcome != 'success'
-        run: |
-          echo "编译错误：未找到驱动文件，请检查编译过程是否正确。"
-        shell: bash
+            android-kernel/${{ env.OUTPUT_PATH }}
