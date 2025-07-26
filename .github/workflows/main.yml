@@ -10,7 +10,7 @@ on:
         description: '内核版本(4.4-6.6)'
         required: true
       driver_name:
-        description: '驱动程序模块名称(mydriver.ko)'
+        description: '驱动程序模块名称(hack.ko)'
         required: true
       target_arch:
         description: '目标架构 (aarch64, x86_64, etc.)'
