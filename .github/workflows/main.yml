@@ -10,7 +10,7 @@ on:
         description: '内核版本(4.4-6.6)'
         required: true
       driver_name:
-        description: '驱动程序模块名称(hack.ko)'
+        description: '驱动程序模块名称(mydriver.ko)'
         required: true
       target_arch:
         description: '目标架构 (aarch64, x86_64, etc.)'
@@ -59,8 +59,8 @@ jobs:
           
           awk -i inplace -v module="$MODULE_NAME" '
             BEGIN { added=0 }
-            /_COMMON_GKI_MODULES_LIST = \[/ { in_list=1 }
-            in_list && /\]/ {
+            /_COMMON_GKI_MODULES_LIST =  $$/ { in_list=1 }
+            in_list && /$$ / {
               if (!added) {
                 print "    \"" module "\","
                 added=1
@@ -111,3 +111,10 @@ jobs:
           name: kernel-driver-${{ github.event.inputs.target_arch }}
           path: |
             android-kernel/${{ env.OUTPUT_PATH }}
+      
+      - name: Upload all files
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: all-files
+          path: |
+            .
