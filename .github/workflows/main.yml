@@ -1,0 +1,143 @@
+name: Android内核驱动编译
+
+on:
+  workflow_dispatch:
+    inputs:
+      android_version:
+        description: '安卓版本(10-15)'
+        required: true
+      kernel_version:
+        description: '内核版本(4.4-6.6)'
+        required: true
+      driver_name:
+        description: '驱动程序模块名称(driver.ko)'
+        required: true
+        default: 'driver.ko'
+      target_arch:
+        description: '目标架构 (aarch64, x86_64, etc.)'
+        required: true
+        default: 'aarch64'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. 添加参数打印步骤
+      - name: 打印构建参数
+        run: |
+          echo "========== 构建参数 =========="
+          echo "Android版本: ${{ github.event.inputs.android_version }}"
+          echo "内核版本: ${{ github.event.inputs.kernel_version }}"
+          echo "Name: ${{ github.event.inputs.driver_name }}"
+          echo "Arch: ${{ github.event.inputs.target_arch }}"
+          echo "======================================"
+      
+      - name: 签出存储库
+        uses: actions/checkout@v4.2.2
+        
+      - name: 准备kerneldriver目录
+        run: |
+          echo "Preparing kerneldriver directory..."
+          mkdir kerneldriver
+          mv ./code/*.c ./code/Makefile kerneldriver/
+          
+      - name: 安装repo工具
+        run: |
+          echo "Installing repo tool..."
+          sudo curl -L https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo
+          sudo chmod a+x /usr/local/bin/repo
+
+      - name: 设置Android内核源
+        run: |
+          echo "为版本设置Android内核源 ${{ github.event.inputs.android_version }}"
+          mkdir -p android-kernel && cd android-kernel
+          repo init -u https://android.googlesource.com/kernel/manifest -b common-android${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}
+          repo sync -j$(nproc) -c --no-tags --optimized-fetch --force-sync
+
+      - name: 复制内核驱动程序
+        run: |
+          echo "将驱动程序源复制到内核树..."
+          cd android-kernel
+          cp -r ../kerneldriver common/drivers
+
+      - name: 修改Makefile
+        run: |
+          echo "更新内核Makefile..."
+          cd android-kernel
+          echo "obj-y += kerneldriver/" >> common/drivers/Makefile
+
+      - name: 将模块添加到GKI模块列表
+        if: ${{ github.event.inputs.android_version > 13 }}
+        run: |
+          echo "将模块添加到GKI模块列表 (Android ${{ github.event.inputs.android_version }})"
+          cd android-kernel
+          MODULE_NAME="drivers/kerneldriver/${{ github.event.inputs.driver_name }}"
+          
+          awk -i inplace -v module="$MODULE_NAME" '
+            BEGIN { added=0 }
+            /_COMMON_GKI_MODULES_LIST =  $$/ { in_list=1 }
+            in_list && /$$ / {
+              if (!added) {
+                print "    \"" module "\","
+                added=1
+              }
+              in_list=0
+            }
+            in_list && !added {
+              if (module < $0) {
+                print "    \"" module "\","
+                added=1
+              }
+            }
+            { print }
+          ' common/modules.bzl
+          
+      - name: 为遗留构建准备模块列表
+        if: ${{ github.event.inputs.android_version <= 13 }}
+        run: |
+          echo "更新旧模块列表 (Android ${{ github.event.inputs.android_version }})"
+          cd android-kernel
+          echo "drivers/kerneldriver/${{ github.event.inputs.driver_name }}" >> common/android/gki_aarch64_modules
+      
+      - name: 增加堆栈帧大小限制
+        run: |
+          echo "增加堆栈帧大小限制..."
+          cd android-kernel
+          find . -type f -name "Makefile*" -exec sed -i 's/-Wframe-larger-than=[0-9]*/-Wframe-larger-than=4096/g' {} +
+          grep -q "FRAME_WARN" common/Makefile || echo 'KBUILD_CFLAGS += -Wframe-larger-than=4096' >> common/Makefile
+
+      - name: 安装依赖项
+        run: |
+          echo "安装构建依赖项..."
+          sudo apt-get update
+          sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc python-is-python3
+      
+      - name: 构建内核模块
+        run: |
+          echo "为Android构建内核模块 ${{ github.event.inputs.android_version }} with kernel ${{ github.event.inputs.kernel_version }}..."
+          cd android-kernel
+          if [ ${{ github.event.inputs.android_version }} -le 13 ]; then
+            BUILD_CONFIG=common/build.config.gki.${{ github.event.inputs.target_arch }} LTO=thin build/build.sh -j32
+            OUTPUT_PATH="out/android${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}/dist"
+          else
+            echo "Using Bazel build system for Android ${{ github.event.inputs.android_version }}"
+            tools/bazel run //common:kernel_${{ github.event.inputs.target_arch }}_dist
+            OUTPUT_PATH="out/kernel_${{ github.event.inputs.target_arch }}"
+          fi
+          echo "OUTPUT_PATH=$OUTPUT_PATH" >> $GITHUB_ENV
+        continue-on-error: true
+      
+      # 2. 优化上传的文件名
+      - name: 上传内核工件
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: kernel-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.target_arch }}
+          path: android-kernel/${{ env.OUTPUT_PATH }}
+      
+      - name: 上传所有文件
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: all-files-android-${{ github.event.inputs.android_version }}-kernel-${{ github.event.inputs.kernel_version }}
+          path: |
+            .
