@@ -1,5 +1,4 @@
-
-name: 谷歌安卓内核下载器
+name: 可靠的安卓内核下载器
 
 on:
   workflow_dispatch:
@@ -7,110 +6,115 @@ on:
 jobs:
   fetch_kernel:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        # 使用新命名方式避免特殊字符问题
         include:
-          - { android: 11, kernel: "5.4", id: "a11_k54" }
-          - { android: 12, kernel: "5.4", id: "a12_k54" }
-          - { android: 13, kernel: "5.10", id: "a13_k510" }
-          - { android: 14, kernel: "5.15", id: "a14_k515" }
-          - { android: 14, kernel: "6.1", id: "a14_k61" }
-          - { android: 15, kernel: "6.1", id: "a15_k61" }
+          - { android: 11, kernel: "5.4", mirror: "tsinghua" }
+          - { android: 12, kernel: "5.4", mirror: "tsinghua" }
+          - { android: 13, kernel: "5.10", mirror: "ustc" }
+          - { android: 14, kernel: "5.15", mirror: "tsinghua" }
+          - { android: 14, kernel: "6.1", mirror: "ustc" }
+          - { android: 15, kernel: "6.1", mirror: "tsinghua" }
 
     steps:
-      - name: 初始化环境
+      # 关键修复：多镜像源自动切换
+      - name: 配置镜像源
+        id: mirror_config
         run: |
-          # 创建唯一工作目录
-          WORK_DIR="workdir_${{ matrix.id }}"
-          mkdir -p "$WORK_DIR"
-          cd "$WORK_DIR"
-          echo "WORK_DIR=$(pwd)" >> $GITHUB_ENV
+          case "${{ matrix.mirror }}" in
+            "tsinghua")
+              REPO_URL="https://mirrors.tuna.tsinghua.edu.cn/git/kernel/manifest"
+              MIRROR_NAME="清华大学开源镜像站"
+              ;;
+            "ustc")
+              REPO_URL="https://mirrors.ustc.edu.cn/aosp-kernel/manifest"
+              MIRROR_NAME="中科大开源镜像站"
+              ;;
+          esac
+          
+          echo "REPO_URL=$REPO_URL" >> $GITHUB_ENV
+          echo "MIRROR_NAME=$MIRROR_NAME" >> $GITHUB_ENV
           echo "ARCHIVE_NAME=android${{ matrix.android }}-kernel${{ matrix.kernel }}.zip" >> $GITHUB_ENV
+          
+          # 设置全局git替换规则
+          git config --global url."https://mirrors.tuna.tsinghua.edu.cn/git".insteadOf https://android.googlesource.com
+          git config --global url."https://mirrors.tuna.tsinghua.edu.cn/git".insteadOf git://android.googlesource.com
 
       - name: 安装必要工具
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev \
-            libc6-dev-i386 libncurses5 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev \
-            libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3 python3-pip p7zip-full
-          sudo pip3 install repo
+          sudo apt-get install -y curl git python3 python3-pip p7zip-full
+          sudo pip3 install -U repo
 
-      - name: 配置Repo工具
+      - name: 下载Repo工具
         run: |
-          # 使用清华大学镜像加速国内访问
+          # 从清华镜像下载Repo
           curl -s https://mirrors.tuna.tsinghua.edu.cn/git/git-repo -o repo
           chmod a+x repo
-          ./repo --trace init -u https://aosp.tuna.tsinghua.edu.cn/kernel/manifest 
-          
-      # 分支检测优化
-      - name: 确定实际分支
-        id: branch_detector
+
+      - name: 初始化工作区
         run: |
-          echo "尝试确定Android ${{ matrix.android }}, Kernel ${{ matrix.kernel }}的可用分支..."
-          
-          # 所有可能的分支模式
-          patterns=(
+          WORK_DIR="workdir_${{ matrix.android }}_${{ matrix.kernel }}"
+          mkdir -p "$WORK_DIR"
+          cd "$WORK_DIR"
+          echo "WORK_DIR=$(pwd)" >> $GITHUB_ENV
+
+      - name: 仓库初始化 (${{ env.MIRROR_NAME }})
+        run: |
+          cd ${{ env.WORK_DIR }}
+          # 动态分支处理
+          BRANCH_OPTIONS=(
             "common-android${{ matrix.android }}-${{ matrix.kernel }}"
-            "android-${{ matrix.android }}-${{ matrix.kernel }}"
             "android${{ matrix.android }}-${{ matrix.kernel }}"
-            "mainline-android${{ matrix.android }}-${{ matrix.kernel }}"
-            "android-${{ matrix.kernel }}"
           )
           
-          # 特殊版本的备用分支
-          if [ ${{ matrix.android }} -eq 15 ]; then
-            patterns+=("android-mainline-${{ matrix.kernel }}")
-            patterns+=("mainline-android${{ matrix.android }}-${{ matrix.kernel }}")
-          elif [ ${{ matrix.android }} -eq 14 ] && [ "${{ matrix.kernel }}" == "6.1" ]; then
-            patterns+=("android14-6.1")
+          # 特殊版本处理
+          if [ ${{ matrix.android }} -ge 14 ]; then
+            BRANCH_OPTIONS+=("android-mainline-${{ matrix.kernel }}")
           fi
           
-          # 验证分支是否存在
-          for pattern in "${patterns[@]}"; do
-            echo "检测分支: $pattern"
-            if curl -sI "https://android.googlesource.com/kernel/manifest/+/refs/heads/$pattern" | grep -q "200 OK"; then
-              echo "找到有效分支: $pattern"
-              echo "REAL_BRANCH=$pattern" >> $GITHUB_ENV
+          # 依次尝试可能的有效分支
+          for BRANCH in "${BRANCH_OPTIONS[@]}"; do
+            echo "尝试初始化分支: $BRANCH"
+            if ../repo init -u ${{ env.REPO_URL }} -b $BRANCH; then
+              echo "分支 $BRANCH 初始化成功"
+              echo "BRANCH=$BRANCH" >> $GITHUB_ENV
               exit 0
             fi
+            echo "分支 $BRANCH 初始化失败"
           done
           
-          echo "::error::所有候选分支均无效"
-          echo "REAL_BRANCH=not_found" >> $GITHUB_ENV
-
-      - name: 初始化内核仓库
-        if: env.REAL_BRANCH != 'not_found'
-        run: |
-          cd ${{ env.WORK_DIR }}
-          # 使用检测到的实际分支
-          ./repo init -u https://aosp.tuna.tsinghua.edu.cn/kernel/manifest -b ${{ env.REAL_BRANCH }}
+          echo "::error::所有分支尝试均失败"
+          exit 100
 
       - name: 同步源代码
-        if: env.REAL_BRANCH != 'not_found'
         run: |
           cd ${{ env.WORK_DIR }}
-          ./repo sync -c -j$(nproc) --no-tags --optimized-fetch --force-sync
-          echo "SYNC_COMPLETED=true" >> $GITHUB_ENV
+          # 重试机制（3次尝试）
+          for i in {1..3}; do
+            echo "同步尝试 $i/3"
+            if ../repo sync -c -j$(nproc) --no-tags --optimized-fetch --force-sync; then
+              echo "同步成功"
+              exit 0
+            fi
+            echo "同步失败，等待10秒后重试..."
+            sleep 10
+          done
+          
+          echo "::error::同步失败超过3次"
+          exit 100
 
       - name: 压缩源代码
         run: |
           cd ${{ env.WORK_DIR }}
-          
-          if [ "$REAL_BRANCH" == "not_found" ] || [ -z "$SYNC_COMPLETED" ]; then
-            # 分支错误处理
-            echo "ERROR: 无法获取分支 ${{ matrix.android }}-${{ matrix.kernel }}" > error.txt
-            7z a "${{ env.ARCHIVE_NAME }}" error.txt
-          else
-            # 正常压缩
-            7z a -r -mx=9 "${{ env.ARCHIVE_NAME }}" .
-          fi
+          7z a -r -mx=9 ${{ env.ARCHIVE_NAME }} .
+          echo "ARCHIVE_PATH=$(pwd)/${{ env.ARCHIVE_NAME }}" >> $GITHUB_ENV
 
       - name: 上传结果
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARCHIVE_NAME }}
-          path: ${{ env.WORK_DIR }}/${{ env.ARCHIVE_NAME }}
+          path: ${{ env.ARCHIVE_PATH }}
           retention-days: 7
