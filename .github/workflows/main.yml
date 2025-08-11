@@ -28,7 +28,7 @@ jobs:
       - name: Prepare kerneldriver directory
         run: |
           mkdir kerneldriver
-          mv ./code/*.h ./code/*.c ./code/Makefile kerneldriver/
+          mv ./code/*.c ./code/Makefile kerneldriver/
           
       - name: Install repo tool
         run: |
