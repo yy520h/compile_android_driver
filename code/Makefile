@@ -1,1 +1,0 @@
-obj-m += hack.o
