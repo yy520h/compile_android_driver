@@ -3,65 +3,99 @@ on:
   workflow_dispatch:
     inputs:
       android_version:
-        description: '安卓版本(10-15)'
+        description: '安卓版本(10-15，整数)'
         required: true
+        type: number
       kernel_version:
-        description: '内核版本(4.4-6.6，需与安卓版本匹配，如Android15对应6.1)'
+        description: '内核版本(4.4-6.6，如5.15/6.1，需与安卓版本匹配)'
         required: true
+        type: string
       target_arch:
-        description: '目标架构 (aarch64, x86_64, etc.)'
+        description: '目标架构'
         required: true
         default: 'aarch64'
+        type: choice
+        options:
+          - aarch64
+          - x86_64
+          - arm
+          - x86
+
 jobs:
   pull-and-upload-source:
     runs-on: ubuntu-latest
-    
     steps:
+      # 1. 打印参数（清晰展示输入）
       - name: 打印拉取参数
         run: |
           echo "========== 拉取参数 =========="
           echo "Android版本: ${{ github.event.inputs.android_version }}"
           echo "内核版本: ${{ github.event.inputs.kernel_version }}"
           echo "架构: ${{ github.event.inputs.target_arch }}"
-          echo "======================================"
-      
-      - name: 签出存储库
-        uses: actions/checkout@v4.2.2
-      
-      - name: 安装依赖工具
+          echo "=============================="
+
+      # 2. 基础环境准备（修复依赖安装顺序）
+      - name: 安装核心依赖
         run: |
-          sudo apt-get update
-          sudo apt-get install -y curl git
-          # 安装repo工具
-          sudo curl -L https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo
-          sudo chmod a+x /usr/local/bin/repo
-      
-      - name: 校验内核分支是否存在（关键步骤）
+          sudo apt-get update -y && sudo apt-get upgrade -y
+          sudo apt-get install -y curl git python3 python3-pip
+
+      # 3. 安装repo工具（修复路径权限问题）
+      - name: 安装repo工具
+        run: |
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > repo
+          chmod +x repo
+          sudo mv repo /usr/local/bin/
+          repo --version || echo "repo工具安装完成"
+
+      # 4. 严格校验分支是否存在（避免无效拉取）
+      - name: 校验谷歌官方分支有效性
+        id: check_branch
         run: |
           ANDROID_VER=${{ github.event.inputs.android_version }}
           KERNEL_VER=${{ github.event.inputs.kernel_version }}
           BRANCH="common-android${ANDROID_VER}-${KERNEL_VER}"
-          # 校验谷歌官方分支是否存在
-          if ! git ls-remote --exit-code https://android.googlesource.com/kernel/manifest.git $BRANCH >/dev/null 2>&1; then
-            echo "❌ 错误：谷歌官方不存在分支 $BRANCH"
-            echo "推荐匹配组合：Android15→6.1/6.6、Android14→5.15/6.1、Android13→5.15、Android12→5.10、Android11→5.4、Android10→4.19"
+          MANIFEST_URL="https://android.googlesource.com/kernel/manifest.git"
+          
+          # 校验分支是否存在（兼容Actions网络环境）
+          if git ls-remote --heads $MANIFEST_URL $BRANCH > /dev/null 2>&1; then
+            echo "✅ 分支 $BRANCH 存在，开始拉取"
+            echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          else
+            echo "❌ 错误：谷歌官方无 $BRANCH 分支"
+            echo "推荐匹配组合："
+            echo "Android15→6.1/6.6 | Android14→5.15/6.1 | Android13→5.15"
+            echo "Android12→5.10 | Android11→5.4 | Android10→4.19"
             exit 1
           fi
-          echo "✅ 分支 $BRANCH 存在，开始拉取源码"
-      
-      - name: 拉取Android内核源码（使用谷歌官方源，失败自动重试）
+
+      # 5. 拉取源码（修复同步参数，提升稳定性）
+      - name: 拉取Android内核源码
         run: |
-          ANDROID_VER=${{ github.event.inputs.android_version }}
-          KERNEL_VER=${{ github.event.inputs.kernel_version }}
-          BRANCH="common-android${ANDROID_VER}-${KERNEL_VER}"
-          # 创建源码目录并拉取
           mkdir -p android-kernel && cd android-kernel
-          repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH --depth=1  # 浅克隆提速
-          repo sync -j$(nproc) -c --no-tags --optimized-fetch --force-sync --retries=3  # 3次重试避免网络问题
-      
-      - name: 上传完整内核源码
+          # 初始化repo（指定超时时间）
+          repo init -u https://android.googlesource.com/kernel/manifest \
+                    -b ${{ env.BRANCH }} \
+                    --depth=1 \
+                    --no-repo-verify \
+                    -q
+          # 同步源码（降低并发避免超时，增加重试）
+          repo sync -j8 -c --no-tags --optimized-fetch --force-sync --retries=5
+
+      # 6. 验证源码目录并上传（确保上传有效）
+      - name: 验证源码完整性
+        run: |
+          if [ -d "android-kernel/common" ] && [ -f "android-kernel/common/Makefile" ]; then
+            echo "✅ 源码拉取成功，开始上传"
+          else
+            echo "❌ 源码拉取失败，目录不完整"
+            exit 1
+          fi
+
+      - name: 上传内核源码
         uses: actions/upload-artifact@v4.6.2
         with:
           name: android-kernel-source-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.target_arch }}
-          path: android-kernel/  # 上传拉取的全部源码
-          retention-days: 30  #  artifacts保留30天，可按需调整
+          path: android-kernel/
+          retention-days: 30
+          if-no-files-found: error  # 无文件时直接报错
