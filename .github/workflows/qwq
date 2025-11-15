@@ -1,0 +1,67 @@
+name: Android内核源码拉取与上传
+on:
+  workflow_dispatch:
+    inputs:
+      android_version:
+        description: '安卓版本(10-15)'
+        required: true
+      kernel_version:
+        description: '内核版本(4.4-6.6，需与安卓版本匹配，如Android15对应6.1)'
+        required: true
+      target_arch:
+        description: '目标架构 (aarch64, x86_64, etc.)'
+        required: true
+        default: 'aarch64'
+jobs:
+  pull-and-upload-source:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 打印拉取参数
+        run: |
+          echo "========== 拉取参数 =========="
+          echo "Android版本: ${{ github.event.inputs.android_version }}"
+          echo "内核版本: ${{ github.event.inputs.kernel_version }}"
+          echo "架构: ${{ github.event.inputs.target_arch }}"
+          echo "======================================"
+      
+      - name: 签出存储库
+        uses: actions/checkout@v4.2.2
+      
+      - name: 安装依赖工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl git
+          # 安装repo工具
+          sudo curl -L https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo
+          sudo chmod a+x /usr/local/bin/repo
+      
+      - name: 校验内核分支是否存在（关键步骤）
+        run: |
+          ANDROID_VER=${{ github.event.inputs.android_version }}
+          KERNEL_VER=${{ github.event.inputs.kernel_version }}
+          BRANCH="common-android${ANDROID_VER}-${KERNEL_VER}"
+          # 校验谷歌官方分支是否存在
+          if ! git ls-remote --exit-code https://android.googlesource.com/kernel/manifest.git $BRANCH >/dev/null 2>&1; then
+            echo "❌ 错误：谷歌官方不存在分支 $BRANCH"
+            echo "推荐匹配组合：Android15→6.1/6.6、Android14→5.15/6.1、Android13→5.15、Android12→5.10、Android11→5.4、Android10→4.19"
+            exit 1
+          fi
+          echo "✅ 分支 $BRANCH 存在，开始拉取源码"
+      
+      - name: 拉取Android内核源码（使用谷歌官方源，失败自动重试）
+        run: |
+          ANDROID_VER=${{ github.event.inputs.android_version }}
+          KERNEL_VER=${{ github.event.inputs.kernel_version }}
+          BRANCH="common-android${ANDROID_VER}-${KERNEL_VER}"
+          # 创建源码目录并拉取
+          mkdir -p android-kernel && cd android-kernel
+          repo init -u https://android.googlesource.com/kernel/manifest -b $BRANCH --depth=1  # 浅克隆提速
+          repo sync -j$(nproc) -c --no-tags --optimized-fetch --force-sync --retries=3  # 3次重试避免网络问题
+      
+      - name: 上传完整内核源码
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: android-kernel-source-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.target_arch }}
+          path: android-kernel/  # 上传拉取的全部源码
+          retention-days: 30  #  artifacts保留30天，可按需调整
