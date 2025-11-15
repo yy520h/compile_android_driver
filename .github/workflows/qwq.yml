@@ -7,7 +7,7 @@ on:
         required: true
         type: number
       kernel_version:
-        description: '内核版本(需与安卓版本匹配，如Android15→6.6/6.1)'
+        description: '内核版本(需与安卓版本匹配)'
         required: true
         type: string
       target_arch:
@@ -45,15 +45,19 @@ jobs:
           sudo mv repo /usr/local/bin/
           repo --version || echo "repo工具安装完成"
 
-      - name: 校验分支有效性（适配Android 15）
+      - name: 校验分支有效性（适配全版本）
         id: check_branch
         run: |
           ANDROID_VER=${{ github.event.inputs.android_version }}
           KERNEL_VER=${{ github.event.inputs.kernel_version }}
-          # Android 15的分支命名规则：无common前缀，直接是android{版本}-{内核版本}
-          BRANCH="android${ANDROID_VER}-${KERNEL_VER}"
-          # 清华镜像manifest地址（替代谷歌源）
           MANIFEST_URL="https://mirrors.tuna.tsinghua.edu.cn/git/android/kernel/manifest.git"
+          
+          # 区分Android版本的分支命名规则
+          if [ $ANDROID_VER -eq 15 ]; then
+            BRANCH="android${ANDROID_VER}-${KERNEL_VER}"
+          else
+            BRANCH="common-android${ANDROID_VER}-${KERNEL_VER}"
+          fi
           
           # 校验分支是否存在
           if git ls-remote --heads $MANIFEST_URL $BRANCH > /dev/null 2>&1; then
@@ -61,20 +65,21 @@ jobs:
             echo "BRANCH=$BRANCH" >> $GITHUB_ENV
           else
             echo "❌ 错误：该分支不存在"
-            echo "Android 15推荐分支：android15-6.6（官方新核心）、android14-6.1（兼容核心）"
-            echo "其他版本推荐：Android14→6.1/5.15 | Android13→5.15"
+            echo "版本匹配表："
+            echo "- Android15 → android15-6.6"
+            echo "- Android14 → common-android14-6.1 / common-android14-5.15"
+            echo "- Android13 → common-android13-5.15"
+            echo "- Android12 → common-android12-5.10"
             exit 1
           fi
 
       - name: 拉取Android内核源码（清华镜像）
         run: |
           mkdir -p android-kernel && cd android-kernel
-          # 用清华镜像初始化repo
           repo init -u https://mirrors.tuna.tsinghua.edu.cn/git/android/kernel/manifest.git \
                     -b ${{ env.BRANCH }} \
                     --depth=1 \
                     --no-repo-verify
-          # 同步源码（降低并发+重试）
           repo sync -j4 -c --no-tags --optimized-fetch --force-sync --retries=5
 
       - name: 验证源码完整性
