@@ -104,7 +104,8 @@ jobs:
                     -b ${{ env.BRANCH }} \
                     --depth=1 \
                     --no-repo-verify
-          repo sync -j4 -c --no-tags --optimized-fetch --force-sync --retries=5
+          # 移除无效的--retries参数，保留其他有效同步选项
+          repo sync -j4 -c --no-tags --optimized-fetch --force-sync
 
       - name: 验证源码完整性
         run: |
