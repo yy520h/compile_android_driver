@@ -40,51 +40,47 @@ jobs:
 
       - name: 安装repo工具（多地址自动 fallback）
         run: |
-          # 定义repo的可用下载地址列表
           REPO_URLS=(
             "https://mirrors.tuna.tsinghua.edu.cn/git/git-repo"  # 清华镜像（稳定）
             "https://storage.googleapis.com/git-repo-downloads/repo"  # 谷歌官方（备用）
-            "https://raw.githubusercontent.com/esrlabs/git-repo/stable/repo"  # 第三方镜像（应急）
+            "https://raw.githubusercontent.com/esrlabs/git-repo/stable/repo"  # 第三方应急
           )
 
-          # 遍历地址，尝试下载repo
           for url in "${REPO_URLS[@]}"; do
-            echo "正在尝试从地址下载repo: $url"
+            echo "尝试从地址下载repo: $url"
             if curl -fsSL "$url" -o repo; then
               chmod +x repo
               sudo mv repo /usr/local/bin/
-              echo "✅ repo工具从地址 $url 安装成功"
+              echo "✅ repo从 $url 安装成功"
               repo --version || echo "repo版本检测完成"
               exit 0
             fi
           done
 
-          # 所有地址均失败
-          echo "❌ 所有repo下载地址均失效"
+          echo "❌ 所有repo地址失效"
           exit 1
 
-      - name: 自动匹配可用镜像与分支
+      - name: 自动匹配可用镜像与分支（修复命名规则）
         id: find_mirror
         run: |
           ANDROID_VER=${{ github.event.inputs.android_version }}
           KERNEL_VER=${{ github.event.inputs.kernel_version }}
           
-          # 定义3个镜像的配置：[镜像名, manifest地址, 分支生成规则]
+          # 镜像配置：[镜像名, manifest地址, 分支1（common前缀）, 分支2（无common前缀）]
           MIRRORS=(
-            "google|https://android.googlesource.com/kernel/manifest|android${ANDROID_VER}-${KERNEL_VER};common-android${ANDROID_VER}-${KERNEL_VER}"
-            "tsinghua|https://mirrors.tuna.tsinghua.edu.cn/git/android/kernel/manifest.git|android${ANDROID_VER}-${KERNEL_VER};common-android${ANDROID_VER}-${KERNEL_VER}"
-            "ustc|https://mirrors.ustc.edu.cn/aosp/kernel/manifest|common-android${ANDROID_VER}-${KERNEL_VER};android${ANDROID_VER}-${KERNEL_VER}"
+            "google|https://android.googlesource.com/kernel/manifest|common-android${ANDROID_VER}-${KERNEL_VER}|android${ANDROID_VER}-${KERNEL_VER}"
+            "tsinghua|https://mirrors.tuna.tsinghua.edu.cn/git/android/kernel/manifest.git|common-android${ANDROID_VER}-${KERNEL_VER}|android${ANDROID_VER}-${KERNEL_VER}"
+            "ustc|https://mirrors.ustc.edu.cn/aosp/kernel/manifest|common-android${ANDROID_VER}-${KERNEL_VER}|android${ANDROID_VER}-${KERNEL_VER}"
           )
 
-          # 遍历镜像，自动检测可用分支
+          # 优先检测带common前缀的分支（适配Android14及以下）
           for mirror in "${MIRRORS[@]}"; do
-            IFS="|" read -r mirror_name manifest_url branch_patterns <<< "$mirror"
-            IFS=";" read -r branch1 branch2 <<< "$branch_patterns"
+            IFS="|" read -r mirror_name manifest_url branch_common branch_no_common <<< "$mirror"
             
-            for branch in "$branch1" "$branch2"; do
-              echo "正在检测镜像 [$mirror_name] 的分支: $branch"
+            for branch in "$branch_common" "$branch_no_common"; do
+              echo "检测镜像 [$mirror_name] 分支: $branch"
               if git ls-remote --heads "$manifest_url" "$branch" > /dev/null 2>&1; then
-                echo "✅ 找到可用镜像：$mirror_name"
+                echo "✅ 可用镜像：$mirror_name"
                 echo "✅ 可用分支：$branch"
                 echo "MIRROR_NAME=$mirror_name" >> $GITHUB_ENV
                 echo "MANIFEST_URL=$manifest_url" >> $GITHUB_ENV
@@ -94,17 +90,16 @@ jobs:
             done
           done
 
-          echo "❌ 所有镜像均无匹配分支"
-          echo "支持的版本组合参考："
-          echo "- Android15 → 6.6（谷歌/清华）"
-          echo "- Android14 → 6.1/5.15（中科大/谷歌）"
-          echo "- Android13 → 5.15（全镜像）"
+          echo "❌ 无匹配分支"
+          echo "支持组合："
+          echo "- Android15 → 6.6（android15-6.6）"
+          echo "- Android14 → 6.1（common-android14-6.1）"
           exit 1
 
-      - name: 拉取内核源码（使用匹配到的镜像）
+      - name: 拉取内核源码（匹配到的镜像）
         run: |
           mkdir -p android-kernel && cd android-kernel
-          echo "正在使用镜像 [${{ env.MIRROR_NAME }}] 拉取分支 ${{ env.BRANCH }}"
+          echo "使用镜像 [${{ env.MIRROR_NAME }}] 拉取分支 ${{ env.BRANCH }}"
           repo init -u ${{ env.MANIFEST_URL }} \
                     -b ${{ env.BRANCH }} \
                     --depth=1 \
