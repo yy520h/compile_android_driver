@@ -1,15 +1,15 @@
-name: 拉取OnePlus内核源码并打包
+name: 拉取OnePlus内核并打包
 
 on:
   workflow_dispatch:
 
 jobs:
-  fetch-and-pack:
+  pack-kernel:
     runs-on: ubuntu-latest
     container: ubuntu:22.04
     
     steps:
-    # ===== 1. 安装依赖 =====
+    # 1. 安装依赖
     - name: 安装依赖
       run: |
         export DEBIAN_FRONTEND=noninteractive
@@ -18,9 +18,8 @@ jobs:
         
         git config --global user.name "builder"
         git config --global user.email "builder@github.com"
-        git config --global color.ui false
     
-    # ===== 2. 克隆内核源码 =====
+    # 2. 克隆两个仓库（放到独立目录）
     - name: 克隆内核源码
       run: |
         mkdir -p kernel_workspace
@@ -28,55 +27,53 @@ jobs:
         
         echo "🔄 克隆主内核..."
         git clone --depth=1 -b oneplus/sm8650_b_16.0.0_pad_pro \
-          https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650.git kernel
+          https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650.git
         
         echo "🔄 克隆模块和设备树..."
         git clone --depth=1 -b oneplus/sm8650_b_16.0.0_pad_pro \
-          https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8650.git modules
+          https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8650.git
         
         echo "✓ 克隆完成"
+        du -sh */  # 显示每个目录大小
     
-    # ===== 3. 合并modules到kernel =====
-    - name: 合并modules到kernel
-      run: |
-        # 使用正确的相对路径
-        cd kernel_workspace/kernel
-        
-        echo "📦 合并modules到kernel..."
-        cp -r ../modules/* . 2>/dev/null || true
-        
-        echo "=== 验证关键文件 ==="
-        ls -l oplus_cpu/sched/Kconfig 2>/dev/null || echo "⚠️ oplus_cpu/sched/Kconfig 不存在"
-        
-        echo "=== 最终目录大小 ==="
-        du -sh .
-    
-    # ===== 4. 压缩完整源码 =====
-    - name: 打包完整源码
+    # 3. 直接打包两个独立目录（保留.git）
+    - name: 打包源码
       run: |
         cd kernel_workspace
         
-        echo "📦 正在打包..."
-        # 包含所有内容（包括.git）
-        tar -czf /tmp/oneplus_kernel_sm8650_android16.tar.gz kernel/
+        echo "📦 打包完整源码..."
+        # 打包两个目录，保持独立（方便查看）
+        tar -czf /tmp/oneplus_kernel_full.tar.gz \
+          --exclude='*.tmp' --exclude='*.log' \
+          android_kernel_oneplus_sm8650/ \
+          android_kernel_modules_and_devicetree_oneplus_sm8650/
         
         echo "=== 打包结果 ==="
-        ls -lh /tmp/oneplus_kernel_sm8650_android16.tar.gz
-        echo "SIZE=$(stat -c%s /tmp/oneplus_kernel_sm8650_android16.tar.gz)" >> $GITHUB_ENV
+        ls -lh /tmp/oneplus_kernel_full.tar.gz
+        SIZE=$(stat -c%s /tmp/oneplus_kernel_full.tar.gz)
+        echo "SIZE_MB=$(( $SIZE / 1024 / 1024 ))" >> $GITHUB_ENV
     
-    # ===== 5. 上传 =====
+    # 4. 上传
     - name: 上传源码包
       uses: actions/upload-artifact@v4.6.2
       with:
-        name: "oneplus-kernel-sm8650-android16"
-        path: /tmp/oneplus_kernel_sm8650_android16.tar.gz
+        name: "oneplus-kernel-sm8650-source"
+        path: /tmp/oneplus_kernel_full.tar.gz
         retention-days: 7
     
-    # ===== 6. 结果通知 =====
-    - name: 完成通知
+    # 5. 说明
+    - name: 使用说明
       run: |
-        SIZE_MB=$(( $SIZE / 1024 / 1024 ))
         echo "✅ 打包完成！"
-        echo "📦 文件名: oneplus-kernel-sm8650-android16.tar.gz"
-        echo "📊 大小: ${SIZE_MB} MB"
-        echo "⬇️  请从Artifacts下载"
+        echo "📦 文件名: oneplus-kernel-sm8650-source.tar.gz"
+        echo "📊 大小: ${{ env.SIZE_MB }} MB"
+        echo ""
+        echo "📥 下载后解压:"
+        echo "   tar -xzf oneplus-kernel-sm8650-source.tar.gz"
+        echo ""
+        echo "🔍 本地查找oplus_cpu:"
+        echo "   find . -name 'Kconfig' | grep oplus_cpu"
+        echo ""
+        echo "📂 目录结构:"
+        echo "   android_kernel_oneplus_sm8650/     # 主内核"
+        echo "   android_kernel_modules_and_devicetree_oneplus_sm8650/  # 模块"
