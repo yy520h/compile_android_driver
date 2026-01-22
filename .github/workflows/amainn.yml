@@ -1,4 +1,4 @@
-name: OnePlus Pad Pro 驱动编译
+name: OnePlus Pad Pro 驱动编译（直接复制版）
 
 on:
   workflow_dispatch:
@@ -25,41 +25,28 @@ jobs:
         git config --global user.email "builder@github.com"
         git config --global color.ui false
     
-    # ===== 2. 克隆并合并内核源码 =====
-    - name: 克隆内核源码（修复点）=====
+    # ===== 2. 克隆并合并内核源码（核心修复）=====
+    - name: 克隆并合并内核源码
       run: |
         mkdir -p kernel_workspace && cd kernel_workspace
         
         # 克隆主内核
-        echo "🔄 正在克隆主内核..."
+        echo "🔄 克隆主内核..."
         git clone --depth=1 -b oneplus/sm8650_b_16.0.0_pad_pro \
           https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650.git kernel
         
         # 克隆模块和设备树
-        echo "🔄 正在克隆模块和设备树..."
+        echo "🔄 克隆模块和设备树..."
         git clone --depth=1 -b oneplus/sm8650_b_16.0.0_pad_pro \
           https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8650.git modules
         
-        # 🔥 关键修复：链接modules中的oplus代码到kernel
-        echo "🔧 正在链接vendor模块..."
+        # 🔥 关键：直接复制modules到kernel（就像谷歌脚本那样）
+        echo "📦 合并modules到kernel..."
         cd kernel
+        cp -r ../modules/* . 2>/dev/null || true
         
-        # 如果kernel中oplus_cpu不存在，从modules复制或链接
-        if [ ! -d "oplus_cpu" ] && [ -d "../modules/oplus_cpu" ]; then
-          echo "创建oplus_cpu符号链接..."
-          ln -s ../modules/oplus_cpu oplus_cpu
-        fi
-        
-        # 同样处理其他可能的vendor目录
-        for dir in drivers/oplus drivers/soc/qcom/oplus; do
-          if [ ! -d "$dir" ] && [ -d "../modules/$dir" ]; then
-            mkdir -p $(dirname $dir)
-            ln -s ../../modules/$dir $dir 2>/dev/null || true
-          fi
-        done
-        
-        echo "✓ 源码拉取并链接完成"
-        du -sh . ../modules
+        echo "✓ 源码合并完成，总大小:"
+        du -sh .
     
     # ===== 3. 集成您的驱动源码 =====
     - name: Checkout driver code
@@ -67,11 +54,11 @@ jobs:
       with:
         path: uploaded_driver
     
-    - name: 集成到内核树
+    - name: 准备驱动目录
       run: |
         cd kernel_workspace/kernel
         
-        # 创建驱动目录
+        # 创建并复制驱动源码（就像谷歌脚本那样）
         mkdir -p drivers/oplus_custom
         
         # 复制上传的源码
@@ -87,38 +74,26 @@ jobs:
         # 添加到父Makefile
         echo "obj-y += oplus_custom/" >> drivers/Makefile
         
-        echo "✓ 驱动源码已集成"
+        echo "✓ 驱动集成完成:"
         ls -la drivers/oplus_custom/
     
-    # ===== 4. 配置内核（修复点）=====
+    # ===== 4. 配置内核 =====
     - name: 配置内核
       run: |
         cd kernel_workspace/kernel
         
-        # 🔥 先检查可用的defconfig
-        echo "=== 可用的defconfig ==="
-        find arch/arm64/configs -name "*defconfig" | head -10
+        # 使用OnePlus官方配置
+        echo "🔧 配置内核..."
+        make O=out ARCH=arm64 oplus_debug_defconfig
         
-        # 🔥 尝试使用vendor配置，如果失败则回退
-        if [ -f "arch/arm64/configs/vendor/oplus_caihong_defconfig" ]; then
-          echo "使用 vendor/oplus_caihong_defconfig"
-          make O=out ARCH=arm64 vendor/oplus_caihong_defconfig
-        elif [ -f "arch/arm64/configs/vendor/sm8650_defconfig" ]; then
-          echo "使用 vendor/sm8650_defconfig (回退)"
-          make O=out ARCH=arm64 vendor/sm8650_defconfig
-        else
-          echo "使用默认defconfig (最终回退)"
-          make O=out ARCH=arm64 defconfig
-        fi
-        
-        # 确保模块编译启用
+        # 确保模块支持
         echo "CONFIG_MODULES=y" >> out/.config
         echo "CONFIG_MODULE_UNLOAD=y" >> out/.config
         
         # 清理旧产物
         find out -name "*.ko" -delete
         
-        echo "✓ 内核配置完成"
+        echo "✅ 内核配置完成"
     
     # ===== 5. 编译驱动模块 =====
     - name: 编译模块
@@ -129,8 +104,8 @@ jobs:
         MODULE_NAME="${{ github.event.inputs.module_name }}"
         MODULE_OBJ="${MODULE_NAME%.ko}.o"
         
-        # 编译模块依赖
-        echo "🔨 准备模块环境..."
+        # 准备模块环境
+        echo "🔨 准备模块编译环境..."
         make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
           CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
         
@@ -144,10 +119,10 @@ jobs:
         # 检查产物
         if [ -f "out/drivers/oplus_custom/$MODULE_NAME" ]; then
           echo "MODULE_BUILT=true" >> $GITHUB_OUTPUT
-          echo "✅ 驱动编译成功！文件大小: $(ls -lh out/drivers/oplus_custom/$MODULE_NAME | awk '{print $5}')"
+          echo "✅ 编译成功！文件: $(ls -lh out/drivers/oplus_custom/$MODULE_NAME)"
         else
           echo "MODULE_BUILT=false" >> $GITHUB_OUTPUT
-          echo "❌ 驱动编译失败"
+          echo "❌ 编译失败"
           echo "=== 目录内容 ==="
           find out/drivers/oplus_custom -type f 2>/dev/null || true
           exit 1
@@ -166,29 +141,19 @@ jobs:
     - name: 打包调试信息
       if: failure()
       run: |
-        echo "📦 正在打包调试信息..."
+        echo "📦 打包调试信息..."
         cd kernel_workspace
         
         mkdir -p debug_bundle
+        cp -r kernel/out/drivers/oplus_custom/* debug_bundle/ 2>/dev/null || true
         
-        # 所有编译产物
-        if [ -d kernel/out/drivers/oplus_custom ]; then
-          cp -r kernel/out/drivers/oplus_custom/* debug_bundle/ 2>/dev/null || true
-        fi
-        
-        # 源码
         if [ -d ../uploaded_driver/code ]; then
+          mkdir -p debug_bundle/source
           cp -r ../uploaded_driver/code/* debug_bundle/source/ 2>/dev/null || true
         fi
         
-        # 编译日志
-        find kernel/out -name "*.log" -exec cp {} debug_bundle/ \; 2>/dev/null || true
-        
-        # 配置和Makefile
         cp kernel/out/.config debug_bundle/ 2>/dev/null || true
-        cp kernel/drivers/oplus_custom/Makefile debug_bundle/ 2>/dev/null || true
         
-        # 打包
         tar -czf /tmp/debug_bundle.tar.gz -C debug_bundle .
         echo "DEBUG_SIZE=$(du -sh /tmp/debug_bundle.tar.gz | cut -f1)" >> $GITHUB_ENV
     
@@ -200,15 +165,12 @@ jobs:
         path: /tmp/debug_bundle.tar.gz
         retention-days: 7
     
-    # ===== 8. 总结 =====
+    # ===== 8. 构建结果 =====
     - name: 构建结果
       run: |
         if [ "${{ steps.build_module.outputs.MODULE_BUILT }}" = "true" ]; then
-          echo "🎉 编译成功！请下载 .ko 文件"
-          echo "adb push <文件> /data/local/tmp/"
-          echo "adb shell su -c 'insmod /data/local/tmp/${{ github.event.inputs.module_name }}'"
+          echo "🎉 编译成功！"
         else
           echo "❌ 编译失败！"
-          echo "📥 请下载 debug-all-${{ github.run_id }}.tar.gz"
-          echo "📦 大小: ${{ env.DEBUG_SIZE }}"
+          echo "📥 调试包: debug-all-${{ github.run_id }}.tar.gz (大小: ${{ env.DEBUG_SIZE }})"
         fi
