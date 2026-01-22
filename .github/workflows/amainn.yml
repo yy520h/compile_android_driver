@@ -6,7 +6,7 @@ on:
       module_name:
         description: '驱动模块名称 (如: qx.ko)'
         required: true
-        default: 'mydriver.ko'
+        default: 'driver.ko'
 
 jobs:
   build-module:
