@@ -20,15 +20,12 @@ jobs:
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -yq
         apt-get install -yq git curl build-essential flex bison libssl-dev bc python3
-        
-        # 配置git
         git config --global user.name "builder"
         git config --global user.email "builder@github.com"
     
     # ===== 2. 拉取OnePlus内核源码 =====
     - name: 拉取内核源码
       run: |
-        # 创建manifest并同步（网络稳定）
         mkdir -p kernel_workspace && cd kernel_workspace
         
         cat > default.xml <<'EOF'
@@ -41,18 +38,15 @@ jobs:
         </manifest>
         EOF
         
-        # 安装repo并同步
         curl -L https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo
         chmod +x /usr/local/bin/repo
         
         repo init -u . --manifest-name=default.xml
         repo sync -c --no-tags --optimized-fetch --force-sync -j$(nproc)
-        
         echo "✓ 内核源码拉取完成"
-        du -sh kernel modules
     
     # ===== 3. 集成您的驱动源码 =====
-    - name: 准备驱动源码
+    - name: Checkout driver code
       uses: actions/checkout@v4.2.2
       with:
         path: uploaded_driver
@@ -60,82 +54,74 @@ jobs:
     - name: 集成到内核树
       run: |
         cd kernel_workspace
-        
-        # 创建驱动目录
         mkdir -p kernel/drivers/oplus_custom
         
-        # 复制上传的源码（忽略不存在的文件）
+        # 复制上传的源码
         cp -r ../uploaded_driver/code/* kernel/drivers/oplus_custom/ 2>/dev/null || true
         
         # 确保Makefile存在
         if [ ! -f kernel/drivers/oplus_custom/Makefile ]; then
-          echo "obj-m += ${{ github.event.inputs.module_name %.ko }}/" > kernel/drivers/oplus_custom/Makefile
+          # 使用bash变量处理，不是表达式
+          MODULE_NAME="${{ github.event.inputs.module_name }}"
+          echo "obj-m += ${MODULE_NAME%.ko}/" > kernel/drivers/oplus_custom/Makefile
         fi
         
-        # 添加到父Makefile
         echo "obj-y += oplus_custom/" >> kernel/drivers/Makefile
-        
         echo "✓ 驱动源码已集成"
         ls -la kernel/drivers/oplus_custom/
     
-    # ===== 4. 配置内核（关键） =====
+    # ===== 4. 配置内核 =====
     - name: 配置内核
       run: |
         cd kernel_workspace/kernel
-        
-        # 使用设备默认配置
         make O=out ARCH=arm64 vendor/oplus_caihong_defconfig
-        
-        # 确保模块编译启用
         echo "CONFIG_MODULES=y" >> out/.config
         echo "CONFIG_MODULE_UNLOAD=y" >> out/.config
-        
-        # 清理旧产物
         find out -name "*.ko" -delete
-        
         echo "✓ 内核配置完成"
     
-    # ===== 5. 编译驱动模块 =====
+    # ===== 5. 编译驱动模块（修复点1）=====
     - name: 编译模块
       id: build_module
       run: |
         cd kernel_workspace/kernel
         
-        # 编译（仅模块）
-        make O=out ARCH=arm64 \
-          LLVM=1 LLVM_IAS=1 \
-          CC=clang \
-          CROSS_COMPILE=aarch64-linux-gnu- \
-          modules_prepare
+        # 在bash中处理字符串，不在表达式中
+        MODULE_NAME="${{ github.event.inputs.module_name }}"
+        MODULE_OBJ="${MODULE_NAME%.ko}.o"
+        
+        # 编译模块依赖
+        make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
+          CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
         
         # 编译您的驱动
-        make O=out ARCH=arm64 \
-          LLVM=1 LLVM_IAS=1 \
-          CC=clang \
+        make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
           CROSS_COMPILE=aarch64-linux-gnu- \
           M=drivers/oplus_custom \
-          ${{ github.event.inputs.module_name %.ko }}.o
+          $MODULE_OBJ
         
-        # 检查是否生成.ko
-        if [ -f "out/drivers/oplus_custom/${{ github.event.inputs.module_name }}" ]; then
+        # 检查产物
+        if [ -f "out/drivers/oplus_custom/$MODULE_NAME" ]; then
           echo "MODULE_BUILT=true" >> $GITHUB_OUTPUT
           echo "✓ 驱动编译成功"
         else
           echo "MODULE_BUILT=false" >> $GITHUB_OUTPUT
           echo "✗ 驱动编译失败"
+          # 收集错误信息
+          find out/drivers/oplus_custom -name "*.o" -o -name "*.cmd" > failed_files.txt 2>/dev/null || true
           exit 1
         fi
     
-    # ===== 6. 编译成功：仅上传.ko =====
+    # ===== 6. 成功：上传.ko =====
     - name: 上传驱动模块
       if: steps.build_module.outputs.MODULE_BUILT == 'true'
       uses: actions/upload-artifact@v4.6.2
       with:
-        name: ${{ github.event.inputs.module_name }}-oneplus-padpro
+        name: "${{ github.event.inputs.module_name }}-oneplus-padpro"
         path: kernel_workspace/kernel/out/drivers/oplus_custom/${{ github.event.inputs.module_name }}
         retention-days: 30
     
-    # ===== 7. 编译失败：上传全部 =====
+    # ===== 7. 失败：上传全部调试信息（修复点2）=====
     - name: 打包调试信息
       if: failure()
       run: |
@@ -143,30 +129,32 @@ jobs:
         
         # 创建调试包
         mkdir -p debug_bundle
-        cp -r kernel/out/drivers/oplus_custom debug_bundle/
-        cp -r uploaded_driver/code debug_bundle/
+        cp -r kernel/out/drivers/oplus_custom/* debug_bundle/ 2>/dev/null || true
+        cp -r ../uploaded_driver/code/* debug_bundle/ 2>/dev/null || true
         
-        # 收集日志
+        # 收集日志和配置文件
         find kernel/out -name "*.log" -exec cp {} debug_bundle/ \; 2>/dev/null || true
-        find kernel/out -name "Makefile" -exec cp {} debug_bundle/ \; 2>/dev/null || true
+        cp kernel/drivers/oplus_custom/Makefile debug_bundle/ 2>/dev/null || true
         
-        # 压缩
-        tar -czf debug_bundle.tar.gz debug_bundle/
+        # 打包
+        tar -czf /tmp/debug_bundle.tar.gz -C debug_bundle .
+        echo "DEBUG_SIZE=$(du -sh /tmp/debug_bundle.tar.gz | cut -f1)" >> $GITHUB_ENV
     
     - name: 上传调试包
       if: failure()
       uses: actions/upload-artifact@v4.6.2
       with:
-        name: debug-all-files-${{ github.run_id }}
-        path: debug_bundle.tar.gz
+        name: "debug-all-${{ github.run_id }}"
+        path: /tmp/debug_bundle.tar.gz
         retention-days: 7
-        compression-level: 0  # 已压缩
     
     # ===== 8. 状态通知 =====
     - name: 构建结果
       run: |
         if [ "${{ steps.build_module.outputs.MODULE_BUILT }}" = "true" ]; then
           echo "编译成功！产物已上传"
+          echo "下载后可用: insmod /data/local/tmp/${{ github.event.inputs.module_name }}"
         else
-          echo "编译失败！请下载调试包查看详情"
+          echo "编译失败！请下载debug-all-${{ github.run_id }}.tar.gz"
+          echo "大小: ${{ env.DEBUG_SIZE }}"
         fi
