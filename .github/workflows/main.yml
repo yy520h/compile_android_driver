@@ -37,9 +37,12 @@ jobs:
         
       - name: Prepare kerneldriver directory
         run: |
-          mkdir kerneldriver
-          mv ./code/*.h ./code/*.c ./code/Makefile kerneldriver/
-          
+           mkdir -p kerneldriver
+           #复制所有相关文件（如果不存在则忽略错误）
+           cp ./code/*.c kerneldriver/ 2>/dev/null || true
+           cp ./code/*.h kerneldriver/ 2>/dev/null || true
+           cp ./code/Makefile kerneldriver/ 2>/dev/null || true
+
       - name: Install repo tool
         run: |
           sudo curl -L https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo
