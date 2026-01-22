@@ -15,15 +15,20 @@ jobs:
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -yq
         apt-get install -yq git curl
+        
+        git config --global user.name "builder"
+        git config --global user.email "builder@github.com"
+        git config --global color.ui false
     
     # ===== 2. 克隆内核源码 =====
     - name: 克隆内核源码
       run: |
-        mkdir -p kernel_workspace && cd kernel_workspace
+        mkdir -p kernel_workspace
+        cd kernel_workspace
         
         echo "🔄 克隆主内核..."
         git clone --depth=1 -b oneplus/sm8650_b_16.0.0_pad_pro \
-          https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650.git
+          https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650.git kernel
         
         echo "🔄 克隆模块和设备树..."
         git clone --depth=1 -b oneplus/sm8650_b_16.0.0_pad_pro \
@@ -31,27 +36,28 @@ jobs:
         
         echo "✓ 克隆完成"
     
-    # ===== 3. 简单合并（不复制.git）=====
+    # ===== 3. 合并modules到kernel =====
     - name: 合并modules到kernel
       run: |
+        # 使用正确的相对路径
         cd kernel_workspace/kernel
         
-        echo "📦 合并modules（排除.git）..."
+        echo "📦 合并modules到kernel..."
         cp -r ../modules/* . 2>/dev/null || true
+        
+        echo "=== 验证关键文件 ==="
+        ls -l oplus_cpu/sched/Kconfig 2>/dev/null || echo "⚠️ oplus_cpu/sched/Kconfig 不存在"
         
         echo "=== 最终目录大小 ==="
         du -sh .
-        
-        echo "=== 关键路径检查 ==="
-        ls -ld oplus_cpu oplus_cpu/sched drivers/oplus vendor/oplus 2>/dev/null || echo "部分路径不存在"
     
-    # ===== 4. 压缩完整源码（包含.git）=====
+    # ===== 4. 压缩完整源码 =====
     - name: 打包完整源码
       run: |
         cd kernel_workspace
         
         echo "📦 正在打包..."
-        # 压缩整个kernel目录（包含.git，保持Git信息）
+        # 包含所有内容（包括.git）
         tar -czf /tmp/oneplus_kernel_sm8650_android16.tar.gz kernel/
         
         echo "=== 打包结果 ==="
