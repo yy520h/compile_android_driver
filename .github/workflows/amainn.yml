@@ -1,4 +1,4 @@
-name: OnePlus Pad Pro 驱动编译（最终版）
+name: OnePlus Pad Pro 驱动编译（诊断版）
 
 on:
   workflow_dispatch:
@@ -19,51 +19,55 @@ jobs:
       run: |
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -yq
-        apt-get install -yq git curl build-essential flex bison libssl-dev bc python3
+        apt-get install -yq git curl build-essential flex bison libssl-dev bc python3 tree
         
         git config --global user.name "builder"
         git config --global user.email "builder@github.com"
         git config --global color.ui false
     
-    # ===== 2. 克隆并诊断式合并 =====
-    - name: 克隆并合并内核源码（带诊断）=====
+    # ===== 2. 克隆并深度诊断 =====
+    - name: 克隆并诊断内核结构
       run: |
         mkdir -p kernel_workspace && cd kernel_workspace
         
-        # 克隆主内核和模块
-        echo "🔄 克隆主内核..."
+        # 克隆
         git clone --depth=1 -b oneplus/sm8650_b_16.0.0_pad_pro \
           https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650.git kernel
         
-        echo "🔄 克隆模块和设备树..."
         git clone --depth=1 -b oneplus/sm8650_b_16.0.0_pad_pro \
           https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8650.git modules
         
-        # 🔥 关键：先诊断modules结构，再有针对性地复制
+        # 🔥 深度诊断：打印modules的完整结构
         echo "=== 诊断modules目录结构 ==="
         cd modules
-        find . -type d -name "oplus*" | head -20
-        find . -path "*/sched/Kconfig" | head -10
+        echo "--- 顶层目录 ---"
+        ls -la
+        
+        echo "--- 查找oplus相关目录 ---"
+        find . -type d -name "*oplus*" 2>/dev/null | head -20
+        
+        echo "--- 查找Kconfig文件 ---"
+        find . -name "Kconfig" 2>/dev/null | head -20
         cd ..
         
-        # 🔥 复制代码到kernel（根据实际结构）
+        # 🔥 根据实际结构复制（紧急修复）
+        echo "📦 开始复制..."
         cd kernel
-        echo "📦 复制modules到kernel..."
         
-        # 直接覆盖或创建
-        cp -r ../modules/* . 2>&1 | tee copy.log || true
-        
-        echo "=== 复制结果 ==="
-        ls -la oplus_cpu/ 2>/dev/null || echo "❌ oplus_cpu未找到"
-        ls -la oplus_cpu/sched/Kconfig 2>/dev/null || echo "❌ oplus_cpu/sched/Kconfig未找到"
-        
-        # 如果仍然不存在，紧急方案：搜索并复制
-        if [ ! -f "oplus_cpu/sched/Kconfig" ]; then
-          echo "🚨 紧急搜索并复制..."
-          find ../modules -name "Kconfig" -path "*/sched/*" -exec cp --parents {} . \; 2>/dev/null || true
+        # 如果modules里有kernel目录，复制其内容
+        if [ -d "../modules/kernel" ]; then
+          echo "发现modules/kernel，复制其内容..."
+          cp -r ../modules/kernel/* . 2>/dev/null || true
         fi
         
-        echo "✓ 合并完成"
+        # 直接复制所有内容（忽略错误）
+        cp -r ../modules/* . 2>&1 | tee ../copy.log || true
+        
+        echo "=== 复制后验证 ==="
+        ls -la oplus_cpu/ 2>/dev/null || echo "❌ oplus_cpu 仍未找到"
+        ls -la drivers/oplus/ 2>/dev/null || echo "❌ drivers/oplus 仍未找到"
+        
+        echo "✓ 操作完成"
         du -sh .
     
     # ===== 3. 集成您的驱动源码 =====
@@ -76,48 +80,46 @@ jobs:
       run: |
         cd kernel_workspace/kernel
         
-        # 创建并复制驱动源码
         mkdir -p drivers/oplus_custom
         cp -r ../../uploaded_driver/code/* drivers/oplus_custom/ 2>/dev/null || true
         
-        # 确保Makefile存在
         if [ ! -f drivers/oplus_custom/Makefile ]; then
           MODULE_NAME="${{ github.event.inputs.module_name }}"
           DRIVER_DIR="${MODULE_NAME%.ko}"
           echo "obj-m += $DRIVER_DIR/" > drivers/oplus_custom/Makefile
         fi
         
-        # 添加到父Makefile
         echo "obj-y += oplus_custom/" >> drivers/Makefile
         
         echo "✓ 驱动集成完成:"
         ls -la drivers/oplus_custom/
     
-    # ===== 4. 配置内核 =====
+    # ===== 4. 配置内核（带错误收集）=====
     - name: 配置内核
+      id: config
+      continue-on-error: true  # 允许失败以便上传debug
       run: |
         cd kernel_workspace/kernel
         
-        # 🔥 先验证必要文件存在
-        echo "=== 验证关键文件 ==="
+        echo "=== 再次验证关键文件 ==="
         ls -l oplus_cpu/sched/Kconfig 2>/dev/null || echo "⚠️  警告: oplus_cpu/sched/Kconfig 不存在"
         
-        # 配置
         echo "🔧 配置内核..."
         make O=out ARCH=arm64 oplus_debug_defconfig
         
-        # 确保模块支持
         echo "CONFIG_MODULES=y" >> out/.config
         echo "CONFIG_MODULE_UNLOAD=y" >> out/.config
         
         find out -name "*.ko" -delete
         
         echo "✅ 内核配置完成"
+        echo "CONFIG_SUCCESS=true" >> $GITHUB_OUTPUT
     
     # ===== 5. 编译驱动模块 =====
     - name: 编译模块
       id: build_module
-      continue-on-error: true  # 临时允许失败以收集信息
+      if: steps.config.outputs.CONFIG_SUCCESS == 'true'
+      continue-on-error: true
       run: |
         cd kernel_workspace/kernel
         
@@ -133,20 +135,16 @@ jobs:
           M=drivers/oplus_custom \
           $MODULE_OBJ
         
-        # 即使失败也检查生成了什么
-        echo "=== 编译后检查 ==="
-        find out/drivers/oplus_custom -type f 2>/dev/null || true
-        
         if [ -f "out/drivers/oplus_custom/$MODULE_NAME" ]; then
           echo "MODULE_BUILT=true" >> $GITHUB_OUTPUT
           echo "✅ 编译成功！"
         else
           echo "MODULE_BUILT=false" >> $GITHUB_OUTPUT
-          echo "❌ 编译失败，但继续上传debug信息"
+          echo "❌ 编译失败"
         fi
     
-    # ===== 6. 上传产物 =====
-    - name: 上传驱动模块（如果成功）
+    # ===== 6. 成功：上传.ko =====
+    - name: 上传驱动模块
       if: steps.build_module.outputs.MODULE_BUILT == 'true'
       uses: actions/upload-artifact@v4.6.2
       with:
@@ -154,46 +152,62 @@ jobs:
         path: kernel_workspace/kernel/out/drivers/oplus_custom/${{ github.event.inputs.module_name }}
         retention-days: 30
     
-    # ===== 7. 总是上传调试信息（关键）=====
-    - name: 打包完整调试信息
+    # ===== 7. 总是上传完整调试包（修复点）=====
+    - name: 打包完整内核源码
+      if: always()  # 无论成功失败都执行
       run: |
-        echo "📦 打包所有信息..."
+        echo "📦 正在打包完整内核源码..."
         cd kernel_workspace
         
+        # 创建调试包（包含整个kernel源码）
         mkdir -p debug_bundle
         
-        # 所有内核源码和编译产物
-        cp -r kernel/out/drivers/oplus_custom debug_bundle/ 2>/dev/null || true
+        # 复制整个内核目录（包括所有源码）
+        cp -r kernel/* debug_bundle/ 2>/dev/null || true
         
-        # 配置
-        cp kernel/out/.config debug_bundle/ 2>/dev/null || true
-        
-        # 源码
+        # 复制上传的驱动源码
         if [ -d ../uploaded_driver/code ]; then
-          mkdir -p debug_bundle/source
-          cp -r ../uploaded_driver/code/* debug_bundle/source/ 2>/dev/null || true
+          mkdir -p debug_bundle/uploaded_driver
+          cp -r ../uploaded_driver/code/* debug_bundle/uploaded_driver/ 2>/dev/null || true
         fi
         
-        # dts和相关文件
-        cp -r kernel/arch/arm64/boot/dts/vendor debug_bundle/ 2>/dev/null || true
+        # 创建信息文件
+        cat > debug_bundle/BUILD_INFO.txt <<EOF
+        Build Date: $(date)
+        Module Name: ${{ github.event.inputs.module_name }}
+        Config Success: ${{ steps.config.outputs.CONFIG_SUCCESS }}
+        Build Success: ${{ steps.build_module.outputs.MODULE_BUILT }}
         
-        # 压缩
-        tar -czf /tmp/debug_bundle.tar.gz -C debug_bundle .
-        echo "DEBUG_SIZE=$(du -sh /tmp/debug_bundle.tar.gz | cut -f1)" >> $GITHUB_ENV
+        目录结构:
+        $(tree -L 2 debug_bundle/ 2>/dev/null || find debug_bundle -maxdepth 2)
+        
+        查找oplus_cpu:
+        $(find debug_bundle -name "Kconfig" | grep oplus)
+        EOF
+        
+        # 压缩（排除.git以减小体积）
+        tar --exclude='.git' -czf /tmp/kernel_debug.tar.gz -C debug_bundle .
+        
+        echo "DEBUG_SIZE=$(du -sh /tmp/kernel_debug.tar.gz | cut -f1)" >> $GITHUB_ENV
+        echo "打包完成: $(du -sh /tmp/kernel_debug.tar.gz)"
     
-    - name: 上传调试包（总是执行）
+    - name: 上传完整内核包（总是执行）
+      if: always()
       uses: actions/upload-artifact@v4.6.2
       with:
-        name: "complete-debug-${{ github.run_id }}"
-        path: /tmp/debug_bundle.tar.gz
-        retention-days: 7
+        name: "kernel-source-sm8650-android16"
+        path: /tmp/kernel_debug.tar.gz
+        retention-days: 3  # 短期保留，避免占用空间
     
-    # ===== 8. 最终状态 =====
+    # ===== 8. 结果总结 =====
     - name: 构建结果
       run: |
+        echo "=== 构建总结 ==="
+        echo "配置成功: ${{ steps.config.outputs.CONFIG_SUCCESS }}"
+        echo "编译成功: ${{ steps.build_module.outputs.MODULE_BUILT }}"
+        echo ""
+        echo "📥 下载链接:"
+        echo "  - 内核源码包: kernel-source-sm8650-android16.tar.gz (${{ env.DEBUG_SIZE }})"
         if [ "${{ steps.build_module.outputs.MODULE_BUILT }}" = "true" ]; then
-          echo "🎉 编译成功！"
-        else
-          echo "❌ 编译失败，但已上传完整调试包"
-          echo "📦 下载: complete-debug-${{ github.run_id }}.tar.gz (${{ env.DEBUG_SIZE }})"
+          echo "  - 驱动模块: ${{ github.event.inputs.module_name }}-oneplus-padpro"
         fi
