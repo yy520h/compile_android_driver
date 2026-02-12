@@ -1,231 +1,29 @@
-#ifndef DRIVER_H
-#define DRIVER_H
-#include <linux/module.h>
-#include <linux/tty.h>
-#include <linux/miscdevice.h>
-#include <linux/slab.h>
-#include <linux/random.h>
-#include <linux/mm.h>
-#include <linux/sched/mm.h>
-#include <linux/sched/signal.h>
-#include <linux/cdev.h>
-#include <linux/device.h>
-#include <linux/net.h>
-#include <linux/inet.h>
-#include <net/sock.h>
-#include <asm/pgtable.h>
-#include <linux/set_memory.h>
-#include <linux/version.h>
-#include <linux/rwlock.h>
-#include <linux/input.h>
-#include <linux/wait.h>
-#include <linux/ktime.h>
-#include <linux/atomic.h>
-#include <linux/kobject.h>
-#include <linux/semaphore.h>
-#include <linux/delay.h>
-#include <linux/input/mt.h>
-#include <linux/of.h>
-#include <net/tcp.h>
-#include <net/udp.h>
-#include <asm/unistd.h>
-#include <linux/rcupdate.h>
-#include <linux/uio.h>
-#include <asm/processor.h>
-#include <linux/pid.h>
-#include <linux/sched.h>
-#include <linux/rculist.h>
-#include <linux/string.h>
-#include <linux/kernel.h>
-#include <linux/cred.h>
-#include <linux/io.h>
-#include <linux/uaccess.h>
-#include <linux/kallsyms.h>
-#include <linux/errno.h>
-#include <asm/barrier.h>
-#include <linux/init.h>
-#include <linux/list.h>
-#include <linux/dcache.h>
-#include <linux/fs.h>
-#include <linux/spinlock.h>
-#include <linux/proc_fs.h>
-#include <linux/pid_namespace.h>
-#include <linux/namei.h>
-#include <linux/fs_struct.h>
-#include <linux/rculist_bl.h>
-#include <linux/sched/task.h>
-#include <linux/hash.h>
-#include <linux/proc_ns.h>
-#include <linux/ptrace.h>
-#include <linux/cgroup.h>
-#include <linux/cgroup-defs.h>
-#include <linux/fb.h>
-#include <drm/drm_device.h>
-#include <drm/drm_drv.h>
-#include <drm/drm_crtc.h>
-#include <drm/drm_connector.h>
-#include <drm/drm_modes.h>
-#include <linux/un.h>
-#include <linux/anon_inodes.h>
-#include <linux/kthread.h>
-#include <linux/completion.h>
-#include <linux/mutex.h>
-#include <linux/fdtable.h>
-#include <linux/module.h>
-#include <asm/tlbflush.h>
-#include <asm/cacheflush.h>
-#include <linux/highmem.h>
-#include <linux/vmalloc.h>
-#include <linux/preempt.h>
-#include <asm/mte.h>
-#include <linux/kprobes.h>  // 添加kprobes支持
-#include <linux/pagemap.h>
-#include <linux/pfn.h>
-#include <linux/memory.h>
+#include <linux/module.h>   // 必须直接包含，确保模块宏正确展开
+#include <linux/init.h>     // 包含 __init 和 __exit 宏
+#include "driver.h"
+
+MODULE_LICENSE("GPL");
+// 全局变量定义
+struct mem_tool_device *memdev = NULL;
+dev_t mem_tool_dev_t = 0;
+struct class *mem_tool_class = NULL;
+const char *devicename = NULL;
+char mod_obf_name[16] = "hidden_module";
+rwlock_t pid_locks[LOCK_BUCKETS];
+struct key_hook_state *key_info = NULL;
+struct input_handler key_hook_handler;
+atomic_t bound_dev_count = ATOMIC_INIT(0);
+atomic_t target_bound_mask = ATOMIC_INIT(0);
+struct touch_hook_state *touch_info = NULL;
+struct input_dev *target_ts_dev = NULL;
+int hw_min_x = 0, hw_max_x = 0, hw_min_y = 0, hw_max_y = 0;
+int hw_screen_w = 0, hw_screen_h = 0;
+
+// 静态全局变量
+static struct input_dev *original_ts_dev = NULL;
 
 
-
-
-
-// 设备与常量定义
-#define DEVICE_NAME "qwqet"
-#define LOCK_BUCKETS 256
-#define EVENT_QUEUE_SIZE 32  // 事件队列大小
-#define COMBO_KEY_TIMEOUT 600  // 组合键时间窗口(ms)
-#define UNIX_PATH_LEN 32
-
-// 按键编码（与硬件匹配）
-#define KEY_POWER 116
-#define KEY_VOLUMEUP 115
-#define KEY_VOLUMEDOWN 114
-
-// IOCTL操作命令
-enum OPERATIONS {
-    OP_INIT_KEY = 0x200,
-    OP_READ_MEM = 0x201,
-    OP_WRITE_MEM = 0x202,
-    OP_MODULE_BASE = 0x203,//获取so模块地址
-    OP_MODULE_PID = 0x204,//获取进程pid
-    OP_HIDE_PID = 205,//隐藏进程pid
-    OP_GET_EVENT = 0x206,//获取拦截状态+按键事件
-    OP_TOUCH_MOVE = 0x207, //触摸移动，可在操作途中动态更换目标点，形成曲线移动轨迹
-    OP_TOUCH_DOWN = 0x208,    // 触摸按下（仅按下，不自动抬起）
-    OP_TOUCH_UP = 0x209,      // 触摸抬起（显式调用才抬起）
-};
-
-// UNIX域套接字专用命令
-#define CMD_OPEN_UNIX  _IO('X', 2)  // 打开UNIX域套接字
-#define CMD_CLOSE_UNIX _IO('X', 3)  // 关闭UNIX域套接字
-#define CMD_REOPEN_UNIX _IO('X', 1) // 重新打开UNIX域套接字
-
-// 事件类型宏定义（清晰区分事件含义）
-#define EVENT_ENTER_INTERCEPT 1  // 进入拦截模式
-#define EVENT_EXIT_INTERCEPT 0   // 退出拦截模式
-#define EVENT_KEY_PRESS 1        // 按键按下
-#define EVENT_KEY_RELEASE 0      // 按键抬起
-
-// 数据结构定义
-typedef struct _COPY_MEMORY {
-    pid_t pid;
-    uintptr_t addr;
-    void* buffer;
-    size_t size;
-} COPY_MEMORY, *PCOPY_MEMORY;
-
-typedef struct _MODULE_BASE {
-    pid_t pid;
-    char* name;
-    uintptr_t base;
-} MODULE_BASE, *PMODULE_BASE;
-
-// 按键事件结构（用户空间与内核同步）
-typedef struct _KEY_EVENT {
-    int tp;         // 事件类型（模式切换/按键动作）
-    int key_code;   // 1=音量加, 2=音量减, 0=模式切换
-} KEY_EVENT, *PKEY_EVENT;
-
-// 拦截状态枚举
-enum KEY_HOOK_STATE {
-    STATE_NORMAL = 0,       // 正常模式
-    STATE_INTERCEPT = 1     // 拦截模式
-};
-
-typedef struct _USER_EVENT {
-    int trp;         // 0=非拦截模式, 1=拦截模式
-    int key_code;    // 0=无事件, 1=音量加按下, 2=音量加抬起, 3=音量减按下, 4=音量减抬起
-} USER_EVENT, *PUSER_EVENT;
-
-// 事件队列节点（使用统一结构体）
-struct event_node {
-    struct list_head list;
-    USER_EVENT event;  // 存储统一事件结构
-};
-
-struct key_hook_state {
-    enum KEY_HOOK_STATE state;       // 当前拦截状态
-    bool power_key_pressed;          // 关机键按下状态
-    bool volup_pressed;             // 音量加按下状态
-    bool voldown_pressed;           // 音量减按下状态
-    ktime_t power_press_time;        // 关机键按下时间戳
-    bool combo_triggered;            // 组合键是否触发（核心标记）
-    int combo_type;                 // 新增：1=音量加组合, 2=音量减组合, 0=未触发
-    wait_queue_head_t waitq;         // 等待队列
-    struct list_head event_list;     // 事件队列
-    spinlock_t lock;                 // 自旋锁
-    int event_count;                 // 事件计数
-    bool touch_intercept_enabled; //触摸拦截标志
-};
-
-// 设备管理结构
-struct mem_tool_device {
-    struct cdev cdev;
-    struct device *dev;
-    int max;
-};
-
-// 目标设备白名单（需绑定的按键设备）
-static const char *target_devices[] = {
-    "gpio-keys",               // 音量加
-    "pmic_resin",              // 音量减
-    "pmic_pwrkey",             // 电源键
-    "NVTCapacitiveTouchScreen" // 触摸屏
-};
-
-#define TARGET_DEV_COUNT ARRAY_SIZE(target_devices)
-
-// 全局变量
-static struct mem_tool_device *memdev;
-static dev_t mem_tool_dev_t;
-static struct class *mem_tool_class;
-const char *devicename;
-static char mod_obf_name[16] = {0};
-static rwlock_t pid_locks[LOCK_BUCKETS];
-static struct key_hook_state *key_info;
-static struct input_handler key_hook_handler;
-static DEFINE_MUTEX(dev_lifecycle_lock);   /* 保护 create/destroy */
-
-// 设备绑定跟踪
-static atomic_t bound_dev_count = ATOMIC_INIT(0);
-static atomic_t target_bound_mask = ATOMIC_INIT(0);
-
-/* ---------------- 基础工具函数 ---------------- */
-// 获取PID对应的读写锁
-static rwlock_t *lock_for_pid(pid_t pid) {
-    return &pid_locks[pid % LOCK_BUCKETS];
-}
-
-typedef struct {
-    int last_x, last_y;          // 每次移动的起点
-} touch_move_ctx_t;
-
-
-
-
-
-
-
-// 添加调试打印函数，避免编码问题
-static void print_touch_debug(const char *format, ...) {
+void print_touch_debug(const char *format, ...) {
     char buf[512];  // 使用更大的缓冲区
     va_list args;
     int len;
@@ -256,229 +54,531 @@ static void print_touch_debug(const char *format, ...) {
 
 
 
-#define MAX_SLOTS 13
-// 触摸按下/移动/抬起参数结构体（新增slot字段，支持指定槽位）
-typedef struct {
-    int slot;  // 新增：指定要按下的槽位（0~9）
-    int x, y;  // 按下的屏幕坐标
-} touch_down_t;
+// 强制清理客户端虚拟点
+static void cleanup_client_virtual_points(struct client_state *client) {
+    unsigned long flags_physical, flags_virtual, flags_slots, flags_client;
+    int i, slot;
+    bool need_btn_touch_reset = false;
+    
+    if (!client || !touch_info || !target_ts_dev) {
+        print_touch_debug("cleanup_client_virtual_points: 无效参数");
+        return;
+    }
+    
+    print_touch_debug("强制清理客户端 %d (PID=%d) 的虚拟点，数量=%d", 
+                     client->client_id, client->pid, client->virtual_point_count);
+    
+    LOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
+    
+    // 遍历所有槽位，清理属于该客户端的槽位
+    for (slot = 0; slot < MAX_SLOTS; slot++) {
+        if (touch_info->slots[slot].in_use && 
+            touch_info->slots[slot].client_id == client->client_id) {
+            
+            print_touch_debug("清理槽位 %d (客户端 %d, 跟踪ID=%d)", 
+                             slot, client->client_id, touch_info->slots[slot].tracking_id);
+            
+            // 减少虚拟触摸计数
+            touch_info->virtual_touch_count--;
+            
+            // 重置槽位状态
+            touch_info->slots[slot].in_use = false;
+            touch_info->slots[slot].tracking_id = -1;
+            touch_info->slots[slot].x = -1;
+            touch_info->slots[slot].y = -1;
+            touch_info->slots[slot].client_id = -1;
+            
+            // 立即发送触摸抬起事件（在锁内发送，避免竞态）
+            input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+            input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+        }
+    }
+    
+    // 检查是否需要发送 BTN_TOUCH=0
+    if (touch_info->virtual_touch_count == 0 && 
+        touch_info->physical_touch_count == 0) {
+        need_btn_touch_reset = true;
+        touch_info->virtual_touch_active = false;
+    }
+    
+    // 重置虚拟触摸计数（防止负数）
+    if (touch_info->virtual_touch_count < 0) {
+        touch_info->virtual_touch_count = 0;
+    }
+    
+    UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
+    
+    // 发送同步报告（在锁外发送，避免死锁）
+    if (need_btn_touch_reset) {
+        input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
+        print_touch_debug("发送BTN_TOUCH=0（所有虚拟点清理）");
+    }
+    input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
+    
+    // 清理客户端内部的虚拟点记录
+    for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
+        if (client->virtual_points[i].in_use) {
+            print_touch_debug("清除客户端虚拟点记录[%d]: 槽位=%d", 
+                             i, client->virtual_points[i].slot);
+            client->virtual_points[i].in_use = false;
+            client->virtual_points[i].slot = -1;
+            client->virtual_points[i].tracking_id = -1;
+        }
+    }
+    client->virtual_point_count = 0;
+    
+    print_touch_debug("客户端 %d 虚拟点清理完成，剩余虚拟点数=%d", 
+                     client->client_id, touch_info->virtual_touch_count);
+}
 
-typedef struct {
-    int slot;  // 新增：指定要移动的槽位（0~9）
-    int x, y;  // 目标坐标
-} touch_move_t;
+// 心跳超时回调
+// 心跳超时回调函数
+static void heartbeat_timeout_callback(struct timer_list *timer) {
+    struct client_heartbeat *hb = from_timer(hb, timer, heartbeat_timer);
+    struct client_state *client;
+    
+    if (!hb || !touch_info) {
+        print_touch_debug("心跳回调：参数无效");
+        return;
+    }
+    
+    client = hb->client;
+    if (!client) {
+        print_touch_debug("心跳回调：客户端无效");
+        kfree(hb);
+        return;
+    }
+    
+    if (!hb->alive) {
+        print_touch_debug("客户端 %d (PID=%d) 心跳超时，标记为退出", 
+                         client->client_id, client->pid);
+        client->exited = true;
+        
+        // 这里不立即清理，等待文件描述符关闭时清理
+        // 因为客户端可能还在使用文件描述符
+    } else {
+        // 重置状态，等待下一次心跳
+        hb->alive = false;
+        hb->last_heartbeat = jiffies;
+        
+        // 重新设置定时器（3秒后检查）
+        mod_timer(&hb->heartbeat_timer, jiffies + msecs_to_jiffies(3000));
+    }
+}
+// 客户端管理辅助函数
+static struct client_state* find_client_by_file(struct file *filp) {
+    struct client_state *client;
+    unsigned long flags;
 
-typedef struct {
-    int slot;  // 新增：指定要抬起的槽位（0~9）
-    int dummy;
-} touch_up_t;
+    if (!filp || !touch_info) return NULL;
+
+    spin_lock_irqsave(&touch_info->client_lock, flags);
+    list_for_each_entry(client, &touch_info->client_list, list) {
+        if (client->anon_file == filp) {
+            spin_unlock_irqrestore(&touch_info->client_lock, flags);
+            return client;
+        }
+    }
+    spin_unlock_irqrestore(&touch_info->client_lock, flags);
+    return NULL;
+}
+
+static struct client_state* find_client_by_pid(pid_t pid) {
+    struct client_state *client;
+    unsigned long flags;
+
+    if (!touch_info) return NULL;
+
+    spin_lock_irqsave(&touch_info->client_lock, flags);
+    list_for_each_entry(client, &touch_info->client_list, list) {
+        if (client->pid == pid) {
+            spin_unlock_irqrestore(&touch_info->client_lock, flags);
+            return client;
+        }
+    }
+    spin_unlock_irqrestore(&touch_info->client_lock, flags);
+    return NULL;
+}
+
+static struct client_state* create_client(pid_t pid, uid_t uid, struct file *filp) {
+    struct client_state *client;
+    unsigned long flags;
+    int i;
+    struct client_state *existing_client;  // 提前声明所有变量
+    int slot;
+    int tracking_id;
+    bool slot_in_use;
+    int slot_client_id;
+    bool need_btn_touch_reset;
+    struct client_heartbeat *hb;  // 心跳变量提前声明
+    
+    // 检查是否已存在相同PID的客户端
+    existing_client = find_client_by_pid(pid);
+    if (existing_client) {
+        print_touch_debug("已存在PID=%d的客户端，强制清理旧连接", pid);
+        // 标记旧客户端为已退出
+        existing_client->exited = true;
+        
+        // 停止心跳定时器
+        if (existing_client->heartbeat) {
+            del_timer_sync(&existing_client->heartbeat->heartbeat_timer);
+            kfree(existing_client->heartbeat);
+            existing_client->heartbeat = NULL;
+        }
+        
+        // 清理旧客户端的虚拟点
+        for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
+            if (existing_client->virtual_points[i].in_use) {
+                slot = existing_client->virtual_points[i].slot;
+                tracking_id = existing_client->virtual_points[i].tracking_id;
+                
+                print_touch_debug("清理旧客户端虚拟点[%d]：槽位=%d, ID=%d", 
+                                 i, slot, tracking_id);
+                
+                if (slot >= 0 && slot < MAX_SLOTS && target_ts_dev) {
+                    unsigned long flags_physical, flags_virtual, flags_slots, flags_client;
+                    
+                    // 检查槽位状态
+                    LOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
+                    
+                    slot_in_use = touch_info->slots[slot].in_use;
+                    slot_client_id = touch_info->slots[slot].client_id;
+                    
+                    // 确认是这个旧客户端的槽位才清理
+                    if (slot_in_use && slot_client_id == existing_client->client_id) {
+                        need_btn_touch_reset = false;
+                        
+                        // 更新虚拟触摸计数
+                        touch_info->virtual_touch_count--;
+                        if (touch_info->virtual_touch_count <= 0) {
+                            touch_info->virtual_touch_count = 0;
+                            touch_info->virtual_touch_active = false;
+                        }
+                        
+                        // 检查是否需要发送 BTN_TOUCH=0
+                        if (touch_info->virtual_touch_count == 0 && 
+                            touch_info->physical_touch_count == 0) {
+                            need_btn_touch_reset = true;
+                        }
+                        
+                        // 重置槽位状态
+                        touch_info->slots[slot].in_use = false;
+                        touch_info->slots[slot].tracking_id = -1;
+                        touch_info->slots[slot].x = -1;
+                        touch_info->slots[slot].y = -1;
+                        touch_info->slots[slot].client_id = -1;
+                        
+                        UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
+                        
+                        // 发送MT触摸抬起事件
+                        input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+                        input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+                        
+                        if (need_btn_touch_reset) {
+                            input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
+                            print_touch_debug("发送BTN_TOUCH=0（清理旧客户端）");
+                        }
+                        
+                        input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
+                        print_touch_debug("清理旧客户端槽位：槽位=%d, ID=%d, 剩余虚拟点=%d", 
+                            slot, tracking_id, touch_info->virtual_touch_count);
+                    } else {
+                        UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
+                    }
+                }
+                
+                // 清除客户端记录
+                existing_client->virtual_points[i].in_use = false;
+                existing_client->virtual_points[i].slot = -1;
+                existing_client->virtual_points[i].tracking_id = -1;
+            }
+        }
+        
+        existing_client->virtual_point_count = 0;
+        
+        // 从列表中移除旧客户端
+        remove_client(existing_client);
+        kfree(existing_client);
+    }
+    
+    // 创建新客户端
+    client = kzalloc(sizeof(struct client_state), GFP_KERNEL);
+    if (!client) {
+        print_touch_debug("分配客户端结构失败");
+        return NULL;
+    }
+    
+    INIT_LIST_HEAD(&client->list);
+    client->pid = pid;
+    client->uid = uid;
+    client->anon_file = filp;
+    client->ref_count = 1;
+    client->exited = false;
+    
+    spin_lock_irqsave(&touch_info->client_lock, flags);
+    client->client_id = touch_info->next_client_id++;
+    list_add_tail(&client->list, &touch_info->client_list);
+    spin_unlock_irqrestore(&touch_info->client_lock, flags);
+    
+    for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
+        client->virtual_points[i].in_use = false;
+        client->virtual_points[i].slot = -1;
+        client->virtual_points[i].tracking_id = -1;
+    }
+    client->virtual_point_count = 0;
+    
+    // 创建心跳检测
+    hb = kzalloc(sizeof(struct client_heartbeat), GFP_KERNEL);
+    if (hb) {
+        hb->client = client;
+        hb->alive = true;
+        hb->last_heartbeat = jiffies;
+        timer_setup(&hb->heartbeat_timer, heartbeat_timeout_callback, 0);
+        mod_timer(&hb->heartbeat_timer, jiffies + msecs_to_jiffies(3000));
+        client->heartbeat = hb;
+        print_touch_debug("为客户端 %d (PID=%d) 启动心跳检测", 
+                         client->client_id, pid);
+    } else {
+        print_touch_debug("分配心跳结构失败，将继续创建客户端");
+        client->heartbeat = NULL;
+    }
+    
+    print_touch_debug("创建客户端成功: ID=%d, PID=%d, UID=%d", 
+                     client->client_id, pid, uid);
+    return client;
+}
+
+static void remove_client(struct client_state *client) {
+    unsigned long flags;
+    
+    if (!client) {
+        print_touch_debug("remove_client: 客户端为空");
+        return;
+    }
+    
+    print_touch_debug("从客户端列表移除: ID=%d, PID=%d", client->client_id, client->pid);
+    
+    // 停止心跳定时器
+    if (client->heartbeat) {
+        del_timer_sync(&client->heartbeat->heartbeat_timer);
+        kfree(client->heartbeat);
+        client->heartbeat = NULL;
+    }
+    
+    // 从列表中移除
+    spin_lock_irqsave(&touch_info->client_lock, flags);
+    list_del(&client->list);
+    spin_unlock_irqrestore(&touch_info->client_lock, flags);
+}
 
 
 
-struct touch_hook_state {
-    struct {
-        bool in_use;
-        int x, y;
-        int tracking_id;
-    } slots[MAX_SLOTS];
-    spinlock_t lock;
-    int next_tracking_id;
-    // 虚拟触摸状态
-    bool virtual_touch_active;
-    int virtual_touch_count;
-    spinlock_t virtual_lock;
-    // 物理触摸状态（按槽位跟踪）
-    bool physical_slots_active[MAX_SLOTS];  // 新增：每个槽位的物理触摸状态
-    int physical_slots_tracking_id[MAX_SLOTS];  // 新增：每个槽位的tracking_id
-    int physical_touch_count;
-    spinlock_t physical_lock;
-    // 触摸屏的input_handle
-    struct input_handle *ts_handle;
-    // 当前处理的槽位
-    int current_slot;  //跟踪当前槽位
-};
-
-
-// 全局变量初始化（移除原单点状态变量）
-static struct touch_hook_state *touch_info;
-static struct input_dev *target_ts_dev = NULL;
-
-// 全局分辨率变量（保持不变）
-static int hw_min_x, hw_max_x, hw_min_y, hw_max_y;
-static int hw_screen_w, hw_screen_h;
-//static int sys_screen_w = 1800;
-//static int sys_screen_h = 2880;
-
-/*static void map_coords_to_ts(int *x, int *y) {
-    *x = hw_min_x + (*x * hw_screen_w) / sys_screen_w;
-    *y = hw_min_y + (*y * hw_screen_h) / sys_screen_h;
-    *x = clamp_t(int, *x, hw_min_x, hw_max_x);
-    *y = clamp_t(int, *y, hw_min_y, hw_max_y);
-}*/
-
-
-
-// 辅助宏：确保锁顺序一致
-#define LOCK_PHYSICAL_THEN_VIRTUAL(flags_phys, flags_virt) \
-    do { \
-        spin_lock_irqsave(&touch_info->physical_lock, (flags_phys)); \
-        spin_lock_irqsave(&touch_info->virtual_lock, (flags_virt)); \
-    } while (0)
-
-#define UNLOCK_VIRTUAL_THEN_PHYSICAL(flags_phys, flags_virt) \
-    do { \
-        spin_unlock_irqrestore(&touch_info->virtual_lock, (flags_virt)); \
-        spin_unlock_irqrestore(&touch_info->physical_lock, (flags_phys)); \
-    } while (0)
-
-// 触摸按下 - 修复锁顺序
-static void touch_down(int slot, int x, int y) {
-    unsigned long flags_physical, flags_virtual;
+static void touch_down(int slot, int x, int y, struct client_state *client) {
+    unsigned long flags_physical, flags_virtual, flags_slots, flags_client;
     int tracking_id;
     bool need_btn_touch = false;
     int old_virtual_count;
+    int client_slot = -1;
+    int i;
+    
+    // 检查客户端是否有效
+    if (!client) {
+        print_touch_debug("触摸按下失败：客户端无效");
+        return;
+    }
+    
+    // 检查客户端是否已退出
+    if (client->exited) {
+        print_touch_debug("触摸按下失败：客户端 %d 已退出", client->client_id);
+        return;
+    }
+    
+    // 检查心跳是否正常
+    if (client->heartbeat && !client->heartbeat->alive) {
+        print_touch_debug("触摸按下失败：客户端 %d 心跳异常", client->client_id);
+        return;
+    }
     
     if (slot < 0 || slot >= MAX_SLOTS) {
         print_touch_debug("触摸按下失败：无效槽位=%d", slot);
         return;
     }
-    //坐标有效性检查
-    if (x < -1 || x >= hw_screen_w || y < -1 || y >= hw_screen_h) {
-        print_touch_debug("触摸按下失败：坐标(%d,%d)超出屏幕范围", x, y);
+
+    if (client && client->virtual_point_count >= MAX_SLOTS_PER_CLIENT) {
+        print_touch_debug("客户端已达到最大虚拟点数限制");
         return;
     }
 
-    // 按照锁顺序：先physical_lock，后virtual_lock
-    LOCK_PHYSICAL_THEN_VIRTUAL(flags_physical, flags_virtual);
-    
-    // 检查该槽位是否已被占用
+    LOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
+
     if (touch_info->slots[slot].in_use) {
-        UNLOCK_VIRTUAL_THEN_PHYSICAL(flags_physical, flags_virtual);
+        UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
         print_touch_debug("触摸按下失败：槽位=%d 已被占用", slot);
         return;
     }
-    
-    // 分配唯一tracking_id，标记槽位状态
+
     tracking_id = ++touch_info->next_tracking_id;
     touch_info->slots[slot].in_use = true;
     touch_info->slots[slot].x = x;
     touch_info->slots[slot].y = y;
     touch_info->slots[slot].tracking_id = tracking_id;
-    
-    // 更新虚拟触摸计数
+    touch_info->slots[slot].client_id = client ? client->client_id : -1;
+
     old_virtual_count = touch_info->virtual_touch_count;
     touch_info->virtual_touch_count++;
     touch_info->virtual_touch_active = true;
-    
-    // 检查是否需要发送 BTN_TOUCH=1
-    // 如果这是第一个虚拟触摸点，且没有物理触摸，则需要发送BTN_TOUCH=1
+
     if (old_virtual_count == 0 && touch_info->physical_touch_count == 0) {
         need_btn_touch = true;
     }
-    
-    UNLOCK_VIRTUAL_THEN_PHYSICAL(flags_physical, flags_virtual);
-    
-    // 发送MT触摸按下事件
+
+    if (client) {
+        for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
+            if (!client->virtual_points[i].in_use) {
+                client->virtual_points[i].in_use = true;
+                client->virtual_points[i].slot = slot;
+                client->virtual_points[i].tracking_id = tracking_id;
+                client->virtual_points[i].x = x;
+                client->virtual_points[i].y = y;
+                client->virtual_point_count++;
+                client_slot = i;
+                break;
+            }
+        }
+    }
+
+    UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
+
     input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
     input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, tracking_id);
     input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_X, x);
     input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_Y, y);
     input_event(target_ts_dev, EV_ABS, ABS_MT_PRESSURE, 1);
     input_event(target_ts_dev, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
-    
-    // 需要时发送 BTN_TOUCH=1
+
     if (need_btn_touch) {
         input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 1);
         print_touch_debug("发送虚拟BTN_TOUCH=1（首个虚拟点）");
     }
-    
+
     input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
-    print_touch_debug("虚拟触摸按下：槽位=%d, ID=%d, 坐标=(%d,%d), 虚拟点数=%d", slot, tracking_id, x, y, touch_info->virtual_touch_count);
+    print_touch_debug("虚拟触摸按下：客户端=%d, 槽位=%d, ID=%d, 坐标=(%d,%d), 虚拟点数=%d", 
+        client ? client->client_id : -1, slot, tracking_id, x, y, touch_info->virtual_touch_count);
 }
 
-// 触摸抬起 - 修复锁顺序
-static void touch_up(int slot) {
-    unsigned long flags_physical, flags_virtual;
+static void touch_up(int slot, struct client_state *client) {
+    unsigned long flags_physical, flags_virtual, flags_slots, flags_client;
     int tracking_id;
     bool need_btn_touch_reset = false;
+    int client_slot = -1;
+    int i;
+    
+    // 检查客户端是否有效
+    if (!client) {
+        print_touch_debug("触摸抬起失败：客户端无效");
+        return;
+    }
+    
+    // 检查客户端是否已退出
+    if (client->exited) {
+        print_touch_debug("触摸抬起失败：客户端 %d 已退出", client->client_id);
+        return;
+    }
+    
+    // 检查心跳是否正常
+    if (client->heartbeat && !client->heartbeat->alive) {
+        print_touch_debug("触摸抬起失败：客户端 %d 心跳异常", client->client_id);
+        return;
+    }
     
     if (slot < 0 || slot >= MAX_SLOTS) {
         print_touch_debug("触摸抬起失败：无效槽位=%d", slot);
         return;
     }
-    
-    // 按照锁顺序：先physical_lock，后virtual_lock
-    LOCK_PHYSICAL_THEN_VIRTUAL(flags_physical, flags_virtual);
-    
-    // 检查该槽位是否已按下
+
+    LOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
+
     if (!touch_info->slots[slot].in_use) {
-        UNLOCK_VIRTUAL_THEN_PHYSICAL(flags_physical, flags_virtual);
+        UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
         print_touch_debug("触摸抬起失败：槽位=%d 未按下", slot);
         return;
     }
-    
+
+    if (client && touch_info->slots[slot].client_id != client->client_id) {
+        UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
+        print_touch_debug("触摸抬起失败：槽位=%d 不属于客户端=%d", slot, client->client_id);
+        return;
+    }
+
     tracking_id = touch_info->slots[slot].tracking_id;
-    
-    // 更新虚拟触摸计数
+
     touch_info->virtual_touch_count--;
     if (touch_info->virtual_touch_count <= 0) {
         touch_info->virtual_touch_count = 0;
         touch_info->virtual_touch_active = false;
     }
-    
-    // 检查是否需要发送 BTN_TOUCH=0
-    // 如果没有虚拟触摸点了，且没有物理触摸，则需要发送BTN_TOUCH=0
+
     if (touch_info->virtual_touch_count == 0 && touch_info->physical_touch_count == 0) {
         need_btn_touch_reset = true;
     }
-    
-    // 重置该槽位状态
+
+    if (client) {
+        for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
+            if (client->virtual_points[i].in_use && 
+                client->virtual_points[i].slot == slot &&
+                client->virtual_points[i].tracking_id == tracking_id) {
+                client->virtual_points[i].in_use = false;
+                client->virtual_points[i].slot = -1;
+                client->virtual_points[i].tracking_id = -1;
+                client->virtual_point_count--;
+                if (client->virtual_point_count < 0) client->virtual_point_count = 0;
+                client_slot = i;
+                break;
+            }
+        }
+    }
+
     touch_info->slots[slot].in_use = false;
     touch_info->slots[slot].tracking_id = -1;
     touch_info->slots[slot].x = -1;
     touch_info->slots[slot].y = -1;
-    
-    UNLOCK_VIRTUAL_THEN_PHYSICAL(flags_physical, flags_virtual);
-    
-    // 发送MT触摸抬起事件
+    touch_info->slots[slot].client_id = -1;
+
+    UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
+
     input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
     input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
-    
-    // 需要时发送 BTN_TOUCH=0
+
     if (need_btn_touch_reset) {
         input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
         print_touch_debug("发送虚拟BTN_TOUCH=0（最后虚拟点抬起）");
     }
-    
-    input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
-    print_touch_debug("虚拟触摸抬起：槽位=%d, ID=%d, 剩余虚拟点数=%d", slot, tracking_id, touch_info->virtual_touch_count);
-}
 
-// 触摸移动 - 只使用 slots 锁
+    input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
+    print_touch_debug("虚拟触摸抬起：客户端=%d, 槽位=%d, ID=%d, 剩余虚拟点数=%d", 
+        client ? client->client_id : -1, slot, tracking_id, touch_info->virtual_touch_count);
+}
 static void touch_move(int slot, int x, int y) {
-    unsigned long flags;
-    
+    unsigned long flags_physical, flags_virtual, flags_slots;
+
     if (slot < 0 || slot >= MAX_SLOTS) {
         print_touch_debug("触摸移动失败：无效槽位=%d", slot);
         return;
     }
-    
-    spin_lock_irqsave(&touch_info->lock, flags);
-    
-    // 检查该槽位是否已按下
+
+    LOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
+
     if (!touch_info->slots[slot].in_use) {
-        spin_unlock_irqrestore(&touch_info->lock, flags);
+        UNLOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
         print_touch_debug("触摸移动失败：槽位=%d 未按下", slot);
         return;
     }
-    
-    // 更新该槽位坐标
+
     touch_info->slots[slot].x = x;
     touch_info->slots[slot].y = y;
-    
-    spin_unlock_irqrestore(&touch_info->lock, flags);
-    
-    // 发送MT触摸移动事件
+
+    UNLOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
+
     input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
     input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, touch_info->slots[slot].tracking_id);
     input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_X, x);
@@ -486,18 +586,9 @@ static void touch_move(int slot, int x, int y) {
     input_event(target_ts_dev, EV_ABS, ABS_MT_PRESSURE, 1);
     input_event(target_ts_dev, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
     input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
-    // print_touch_debug("触摸移动：槽位=%d, 坐标=(%d,%d)", slot, x, y);
 }
 
 
-
-
-
-
-
-
-// 在文件顶部添加全局变量，用于保存原始设备引用
-static struct input_dev *original_ts_dev = NULL;
 static int input_mt_reinit_slots(struct input_dev *dev, unsigned int new_num_slots) {
     int ret;
     struct input_dev *new_dev;
@@ -571,7 +662,7 @@ static int input_mt_reinit_slots(struct input_dev *dev, unsigned int new_num_slo
     
     // 【关键步骤1】注销原设备（这会删除 /dev/input/eventX）
     input_unregister_device(dev);
-    print_touch_debug("原设备已注销，等待重新注册...\n");
+    print_touch_debug("The original device has been deregistered and is waiting to be re-registered..\n");
     
     // 短暂延迟，确保设备完全注销
     msleep(200);
@@ -579,7 +670,7 @@ static int input_mt_reinit_slots(struct input_dev *dev, unsigned int new_num_slo
     // 【关键步骤2】注册新设备（这会创建新的 /dev/input/eventX）
     ret = input_register_device(new_dev);
     if (ret) {
-        print_touch_debug("注册新设备失败: %d！框架可能无法自动恢复\n", ret);
+        print_touch_debug("Failed to register new device: %d! The framework may not be able to automatically recover.\n", ret);
         input_free_device(new_dev);
         return ret;
     }
@@ -592,7 +683,7 @@ static int input_mt_reinit_slots(struct input_dev *dev, unsigned int new_num_slo
         touch_info->ts_handle->dev = new_dev;
     }
     
-    print_touch_debug("设备重注册成功，新slot数量: %d，框架将自动识别\n", new_num_slots);
+    print_touch_debug("Device re-registration successful, new slot count: %d, the framework will recognize it automatically\n", new_num_slots);
     return 0;
 }
 
@@ -610,282 +701,190 @@ static int input_mt_reinit_slots(struct input_dev *dev, unsigned int new_num_slo
 
 
 
-// ============= 错误码定义 =============
-enum translate_error {
-    TRANSLATE_SUCCESS = 0,
-    ERR_INVALID_MM = -EINVAL,
-    ERR_INVALID_ARGS = -EINVAL,
-    ERR_PGD_INVALID = -EFAULT,
-    ERR_P4D_INVALID = -EFAULT,
-    ERR_PUD_INVALID = -EFAULT,
-    ERR_PMD_INVALID = -EFAULT,
-    ERR_PTE_INVALID = -EFAULT,
-    ERR_PAGE_NOT_PRESENT = -EFAULT,
-    ERR_PERMISSION_DENIED = -EACCES,
-    ERR_PAGE_SWAP = -EAGAIN,
-    ERR_PFN_INVALID = -EFAULT,
-    ERR_HUGE_PAGE = 1,
-};
 
-// ============= 5.10内核兼容层 =============
-#ifndef TASK_SIZE_MAX
-#define TASK_SIZE_MAX TASK_SIZE
-#endif
 
-#ifndef pgd_large
-#define pgd_large(pgd) false
-#endif
 
-#ifndef pud_large
-#define pud_large(pud) false
-#endif
 
-#ifndef pte_swapped
-#define pte_swapped(pte) (!pte_present(pte) && !pte_none(pte))
-#endif
 
-// ============= 页表遍历（仅调试） =============
-static int walk_page_table(struct mm_struct *mm, unsigned long va, phys_addr_t *pa, bool *is_huge, bool *is_swap) {
+
+//虚拟地址转物理地址
+static phys_addr_t translate_linear_address(struct mm_struct* mm, uintptr_t va) {
     pgd_t *pgd;
     p4d_t *p4d;
     pud_t *pud;
     pmd_t *pmd;
     pte_t *pte;
-    int ret = TRANSLATE_SUCCESS;
     spinlock_t *ptl;
-    
-    if (!mm || !pa)
-        return ERR_INVALID_ARGS;
-    
-    if (is_huge) *is_huge = false;
-    if (is_swap) *is_swap = false;
-    
-    if (va >= TASK_SIZE)
-        return ERR_INVALID_ARGS;
-    
-    down_read(&mm->mmap_lock);
+    phys_addr_t page_addr = 0;
+    uintptr_t page_offset;
+    struct page *page = NULL;
+    int ret;
+retry:
+    spin_lock(&mm->page_table_lock);
     
     pgd = pgd_offset(mm, va);
-    if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd))) {
-        ret = ERR_PGD_INVALID;
-        goto out;
-    }
-    
+    if (pgd_none(*pgd) || pgd_bad(*pgd)) goto out_unlock;
     p4d = p4d_offset(pgd, va);
-    if (p4d_none(*p4d) || unlikely(p4d_bad(*p4d))) {
-        ret = ERR_P4D_INVALID;
-        goto out;
-    }
-    
+    if (p4d_none(*p4d) || p4d_bad(*p4d)) goto out_unlock;
     pud = pud_offset(p4d, va);
-    if (pud_none(*pud) || unlikely(pud_bad(*pud))) {
-        ret = ERR_PUD_INVALID;
-        goto out;
-    }
-    
-    if (pud_leaf(*pud) || pud_large(*pud)) {
-        if (!pud_present(*pud)) {
-            ret = ERR_PAGE_NOT_PRESENT;
-            goto out;
-        }
-        *pa = pud_pfn(*pud) << PAGE_SHIFT;
-        *pa |= va & ~PUD_MASK;
-        *is_huge = true;
-        ret = ERR_HUGE_PAGE;
-        goto out;
-    }
-    
+    if (pud_none(*pud) || pud_bad(*pud)) goto out_unlock;
     pmd = pmd_offset(pud, va);
-    if (pmd_none(*pmd)) {
-        ret = ERR_PMD_INVALID;
-        goto out;
+    if (pmd_none(*pmd)) goto out_unlock;
+    if (pmd_bad(*pmd)) goto out_unlock;
+    if (pmd_trans_huge(*pmd)) {
+        page_addr = (phys_addr_t)pmd_pfn(*pmd) << PAGE_SHIFT;
+        page_offset = va & ~PAGE_MASK;
+        spin_unlock(&mm->page_table_lock);
+        return page_addr + page_offset;
     }
-    
-    if (pmd_trans_huge(*pmd) || pmd_leaf(*pmd)) {
-        if (!pmd_present(*pmd)) {
-            ret = ERR_PAGE_NOT_PRESENT;
-            goto out;
-        }
-        *pa = pmd_pfn(*pmd) << PAGE_SHIFT;
-        *pa |= va & ~PMD_MASK;
-        *is_huge = true;
-        ret = ERR_HUGE_PAGE;
-        goto out;
-    }
-    
     pte = pte_offset_map_lock(mm, pmd, va, &ptl);
-    if (!pte) {
-        ret = ERR_PTE_INVALID;
-        goto out;
-    }
-    
-    if (pte_none(*pte)) {
-        pte_unmap_unlock(pte, ptl);
-        ret = ERR_PTE_INVALID;
-        goto out;
-    }
-    
-    if (pte_swapped(*pte)) {
-        pte_unmap_unlock(pte, ptl);
-        if (is_swap) *is_swap = true;
-        ret = ERR_PAGE_SWAP;
-        goto out;
-    }
-    
+    if (!pte) goto out_unlock;
     if (!pte_present(*pte)) {
         pte_unmap_unlock(pte, ptl);
-        ret = ERR_PAGE_NOT_PRESENT;
-        goto out;
-    }
-    
-    if (!pfn_valid(pte_pfn(*pte))) {
-        pte_unmap_unlock(pte, ptl);
-        ret = ERR_PFN_INVALID;
-        goto out;
-    }
-    
-    *pa = pte_pfn(*pte) << PAGE_SHIFT;
-    *pa |= va & ~PAGE_MASK;
-    pte_unmap_unlock(pte, ptl);
-    ret = TRANSLATE_SUCCESS;
-    
-out:
-    up_read(&mm->mmap_lock);
-    return ret;
-}
-
-// ============= 核心读写函数 =============
-static int safe_rw_memory_pages(struct mm_struct *mm, unsigned long va, void *user_buffer, size_t size, bool is_write) {
-    struct page **pages = NULL;
-    unsigned long start_va, end_va;
-    int nr_pages, i, ret = 0;
-    size_t bytes_done = 0;
-    int locked = 1; // 必须初始化
-    
-    start_va = va & PAGE_MASK;
-    end_va = PAGE_ALIGN(va + size);
-    nr_pages = (end_va - start_va) >> PAGE_SHIFT;
-    
-    if (nr_pages == 0 || nr_pages > 64)
-        return ERR_INVALID_ARGS;
-    
-    pages = kvmalloc_array(nr_pages, sizeof(struct page *), GFP_KERNEL);
-    if (!pages)
-        return -ENOMEM;
-    
-    down_read(&mm->mmap_lock);
-    nr_pages = get_user_pages_remote(mm, start_va, nr_pages, is_write ? FOLL_WRITE : 0, pages, NULL, &locked);
-    if (locked)
+        spin_unlock(&mm->page_table_lock);
+        
+// ========== 内核版本适配开始 ==========
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0)
+        // 6.5+ 版本：6个参数，移除 locked 参数
+        down_read(&mm->mmap_lock);
+        ret = get_user_pages_remote(mm, va, 1, FOLL_FORCE, &page, NULL);
         up_read(&mm->mmap_lock);
-    
-    if (nr_pages <= 0) {
-        ret = nr_pages ? nr_pages : -EFAULT;
-        goto free_pages;
-    }
-    
-    for (i = 0; i < nr_pages; i++) {
-        void *kern_addr;
-        size_t offset, chunk_size;
-        struct page *page = pages[i];
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+        // 5.10 - 6.4 版本：7个参数
+        down_read(&mm->mmap_lock);
+        ret = get_user_pages_remote(mm, va, 1, FOLL_FORCE, &page, NULL, NULL);
+        up_read(&mm->mmap_lock);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
+        // 5.9 版本：7个参数，但用 mmap_sem（过渡版本，很少见）
+        down_read(&mm->mmap_sem);
+        ret = get_user_pages_remote(mm, va, 1, FOLL_FORCE, &page, NULL, NULL);
+        up_read(&mm->mmap_sem);
+#else
+        // 5.4 及以下：8个参数（含 vmas 参数）
+        down_read(&mm->mmap_sem);
+        ret = get_user_pages_remote(NULL, mm, va, 1, FOLL_FORCE, &page, NULL, NULL);
+        up_read(&mm->mmap_sem);
+#endif
+// ========== 内核版本适配结束 ==========
         
-        offset = (i == 0) ? (va & ~PAGE_MASK) : 0;
-        chunk_size = min_t(size_t, PAGE_SIZE - offset, size - bytes_done);
-        
-        if (PageSwapCache(page)) {
-            ret = ERR_PAGE_SWAP;
-            put_page(page);
-            break;
+        if (ret <= 0) {
+            printk(KERN_ERR "[qwq] get_user_pages failed: %d\n", ret);
+            return 0;
         }
-        
-        kern_addr = kmap(page);
-        if (!kern_addr) {
-            put_page(page);
-            ret = -ENOMEM;
-            break;
-        }
-        
-        if (is_write) {
-            if (copy_from_user(kern_addr + offset, user_buffer + bytes_done, chunk_size)) {
-                kunmap(page);
-                put_page(page);
-                ret = -EFAULT;
-                break;
-            }
-            set_page_dirty_lock(page);
-        } else {
-            if (copy_to_user(user_buffer + bytes_done, kern_addr + offset, chunk_size)) {
-                kunmap(page);
-                put_page(page);
-                ret = -EFAULT;
-                break;
-            }
-        }
-        
-        kunmap(page);
         put_page(page);
-        bytes_done += chunk_size;
+        goto retry;
     }
+    page_addr = (phys_addr_t)pte_pfn(*pte) << PAGE_SHIFT;
+    page_offset = va & (PAGE_SIZE - 1);
     
-free_pages:
-    kvfree(pages);
-    return ret < 0 ? ret : bytes_done;
+    pte_unmap_unlock(pte, ptl);
+    spin_unlock(&mm->page_table_lock);
+    return page_addr + page_offset;
+out_unlock:
+    spin_unlock(&mm->page_table_lock);
+    return 0;
 }
 
-// Android 12 + 5.10未导出ptrace_may_access
-static bool check_process_access(struct task_struct *task) {
-    return capable(CAP_SYS_PTRACE);
-}
 
-// ============= 安全入口 =============
-static bool safe_process_memory_rw(pid_t pid, uintptr_t addr, void *user_buffer, size_t size, bool is_write) {
-    struct task_struct *task = NULL;
-    struct mm_struct *mm = NULL;
-    long ret;
-    
-    if (!user_buffer || size == 0 || size > SIZE_MAX - addr)
-        return false;
+
+
+
+
+
+static bool safe_rw_memory(pid_t pid, uintptr_t addr, void* user_buffer, size_t size, bool is_write) {
+    struct task_struct* task;
+    struct mm_struct* mm;
+    phys_addr_t pa;
+    void *va;
+    size_t offset, chunk;
+    bool result = true;
+    unsigned long irq_flags;
+    rwlock_t *lock;
     
     rcu_read_lock();
     task = pid_task(find_vpid(pid), PIDTYPE_PID);
-    rcu_read_unlock();
     if (!task) {
-        printk(KERN_ERR "[qwq] 进程不存在 (pid=%d)\n", pid);
+        rcu_read_unlock();
         return false;
     }
-    
-    // 使用capability检查替代ptrace_may_access
-    if (!check_process_access(task)) {
-        printk(KERN_ERR "[qwq] 权限不足，无法访问进程 %d (uid=%d)\n", pid, task_uid(task).val);
-        return false;
-    }
-    
-    if (task->flags & PF_EXITING) {
-        printk(KERN_ERR "[qwq] 进程正在退出 (pid=%d)\n", pid);
-        return false;
-    }
+    get_task_struct(task);
+    rcu_read_unlock();
     
     mm = get_task_mm(task);
-    if (!mm) {
-        printk(KERN_ERR "[qwq] 获取内存描述符失败 (pid=%d)\n", pid);
-        return false;
+    if (!mm) goto put_task;
+    
+    lock = lock_for_pid(pid);
+    if (is_write)
+        write_lock_irqsave(lock, irq_flags);
+    else
+        read_lock_irqsave(lock, irq_flags);
+    
+    while (size > 0) {
+        pa = translate_linear_address(mm, addr);
+        if (!pa) {
+            printk(KERN_ERR "[qwq] 地址转换失败: 0x%lx\n", addr);
+            result = false;
+            break;
+        }
+        
+        if (!pfn_valid(__phys_to_pfn(pa))) {
+            printk(KERN_ERR "[qwq] 无效物理地址: 0x%llx\n", (unsigned long long)pa);
+            result = false;
+            break;
+        }
+        
+        va = phys_to_virt(pa);
+        if (!va) {
+            printk(KERN_ERR "[qwq] phys_to_virt 失败: 0x%llx\n", (unsigned long long)pa);
+            result = false;
+            break;
+        }
+        
+        offset = addr & (PAGE_SIZE - 1);
+        chunk = min_t(size_t, PAGE_SIZE - offset, size);
+        
+        if (is_write) {
+            if (copy_from_user(va, user_buffer, chunk)) {
+                result = false;
+                break;
+            }
+            // 使用标准屏障替代 __flush_dcache_area
+            smp_wmb();
+        } else {
+            // 使用标准屏障
+            smp_rmb();
+            if (copy_to_user(user_buffer, va, chunk)) {
+                result = false;
+                break;
+            }
+        }
+        
+        user_buffer += chunk;
+        addr += chunk;
+        size -= chunk;
     }
     
-    if (addr >= TASK_SIZE || addr + size > TASK_SIZE) {
-        printk(KERN_ERR "[qwq] 地址越界: 0x%lx + %zu\n", addr, size);
-        mmput(mm);
-        return false;
-    }
-    
-    ret = safe_rw_memory_pages(mm, addr, user_buffer, size, is_write);
+    if (is_write)
+        write_unlock_irqrestore(lock, irq_flags);
+    else
+        read_unlock_irqrestore(lock, irq_flags);
     
     mmput(mm);
-    
-    if (ret < 0) {
-        printk(KERN_ERR "[qwq] 内存操作失败: pid=%d, addr=0x%lx, size=%zu, err=%ld\n", pid, addr, size, ret);
-        return false;
-    }
-    
-    return ret == size;
+put_task:
+    put_task_struct(task);
+    return result;
+}
+
+
+
+
+
+static bool read_process_memory(pid_t pid, uintptr_t addr, void* user_buffer, size_t size) {
+    return safe_rw_memory(pid, addr, user_buffer, size, false);
+}
+
+static bool write_process_memory(pid_t pid, uintptr_t addr, void* user_buffer, size_t size) {
+    return safe_rw_memory(pid, addr, user_buffer, size, true);
 }
 
 
@@ -893,110 +892,200 @@ static bool safe_process_memory_rw(pid_t pid, uintptr_t addr, void *user_buffer,
 
 
 
-
-
-
-
-
-
-// 获取进程内模块基址
-static uintptr_t get_module_base(pid_t pid, const char *name) {
-    struct task_struct *task;
-    struct mm_struct *mm;
-    struct vm_area_struct *vma;
+uintptr_t get_module_base(pid_t pid, const char *name) {
+    struct task_struct *task = NULL;
+    struct mm_struct *mm = NULL;
+    struct vm_area_struct *vma = NULL;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+    struct vma_iterator vmi;  // 6.1+ 迭代器
+#endif
     char buf[256];
     char *path_nm = NULL;
     uintptr_t base = 0;
+    bool found = false;
+    bool task_acquired = false;
+    bool mm_acquired = false;
+
+    if (!name || strlen(name) == 0) {
+        pr_err("[qwq] 模块名为空\n");
+        return 0;
+    }
 
     rcu_read_lock();
     task = pid_task(find_vpid(pid), PIDTYPE_PID);
     if (!task) {
         rcu_read_unlock();
-        print_touch_debug("查找模块: 进程不存在 (pid=%d)", pid);
+        pr_err("[qwq] 进程 %d 不存在\n", pid);
         return 0;
     }
-    // 修复：检查get_task_struct返回值
+
     if (!get_task_struct(task)) {
         rcu_read_unlock();
-        print_touch_debug("查找模块: 获取进程引用失败 (pid=%d)", pid);
         return 0;
     }
+    task_acquired = true;
     rcu_read_unlock();
+
     mm = get_task_mm(task);
     if (!mm) {
-        put_task_struct(task);
-        print_touch_debug("查找模块: 获取内存结构失败 (pid=%d)", pid);
-        return 0;
+        goto cleanup;
     }
-    // 修复：适配内核版本的mmap锁操作
+    mm_acquired = true;
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,8,0)
     down_read(&mm->mmap_lock);
 #else
     down_read(&mm->mmap_sem);
 #endif
-    for (vma = mm->mmap; vma; vma = vma->vm_next) {
-        if (vma->vm_file) {
-            path_nm = d_path(&vma->vm_file->f_path, buf, sizeof(buf)-1);
-            // 修复：检查d_path返回值是否为错误指针
-            if (IS_ERR(path_nm)) {
-                print_touch_debug("d_path失败 (err=%ld, pid=%d)", PTR_ERR(path_nm), pid);
-                continue;
-            }
-            // 修复：用strstr匹配模块名（兼容路径前缀，避免误判）
-            if (strstr(path_nm, name)) {
-                base = vma->vm_start;
-                print_touch_debug("找到模块基址: %s -> 0x%lx", path_nm, base);
-                break;
-            }
+
+    // 彻底绕开 for_each_vma 宏：手动迭代（适配所有内核）
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+    // Linux 6.1+：手动初始化迭代器 + 循环
+    vma_iter_init(&vmi, mm, 0);
+    vma = vma_next(&vmi);
+    while (vma != NULL) {
+#else
+    // Linux 6.1-：传统链表手动遍历
+    vma = mm->mmap;
+    while (vma != NULL) {
+#endif
+        if (!vma->vm_file) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+            vma = vma_next(&vmi);
+#else
+            vma = vma->vm_next;
+#endif
+            continue;
         }
+
+        path_nm = d_path(&vma->vm_file->f_path, buf, sizeof(buf)-1);
+        if (IS_ERR(path_nm)) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+            vma = vma_next(&vmi);
+#else
+            vma = vma->vm_next;
+#endif
+            continue;
+        }
+
+        if (strstr(path_nm, name)) {
+            base = vma->vm_start;
+            found = true;
+
+            // PIE 基址特殊处理
+            if (base == 0x8000) {
+                pr_info("[qwq] 检测到 PIE 基址 0x8000，调整为 0\n");
+                base = 0;
+            }
+
+            pr_info("[qwq] 找到模块 %s 基址: 0x%lx (来自 %s)\n",
+                    name, base, path_nm);
+            break;  // 退出循环
+        }
+
+        // 下一个 VMA
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+        vma = vma_next(&vmi);
+#else
+        vma = vma->vm_next;
+#endif
     }
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,8,0)
     up_read(&mm->mmap_lock);
 #else
     up_read(&mm->mmap_sem);
 #endif
-    mmput(mm);
-    put_task_struct(task);
-    if (!base) {
-        print_touch_debug("未找到模块: %s (pid=%d)", name, pid);
-    }
+
+cleanup:
+    if (mm_acquired)
+        mmput(mm);
+    if (task_acquired)
+        put_task_struct(task);
     return base;
 }
 
 
+
+
+
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+
 pid_t get_process_pid(const char *comm) {
     struct task_struct *task = NULL;
     pid_t tgid = 0;
-    char cmdline[256] = {0};
-    size_t cmdline_len = sizeof(cmdline) - 1;
-    size_t i;  // C89兼容：变量声明在开头
-    //  print_touch_debug("目标进程名=%s（长度=%zu）", comm ? comm : "NULL", comm ? strlen(comm) : 0);
+    char buf[TASK_COMM_LEN] = {0};
+
     if (!comm || strlen(comm) == 0) {
         print_touch_debug("获取PID: 进程名为空");
         return 0;
     }
+
     rcu_read_lock();
     for_each_process(task) {
-        struct mm_struct *mm = get_task_mm(task);
-        if (!mm) continue;
-        if (access_process_vm(task, mm->arg_start, cmdline, cmdline_len, 0) > 0) {
-            for (i = 0; i < cmdline_len; i++) {
-                if (cmdline[i] == '\0') cmdline[i] = ' ';
-            }
-            if (strstr(cmdline, comm)) {
-                tgid = task_tgid_vnr(task);
-                // print_touch_debug("找到进程: cmdline=%s, PID=%d", cmdline, tgid);
-                print_touch_debug("进程=%s（长度=%zu）PID=%d", comm, strlen(comm), tgid);
-                mmput(mm);
-                break;
-            }
+        get_task_comm(buf, task);
+
+        if (strstr(buf, comm)) {
+            tgid = task_tgid_vnr(task);
+            print_touch_debug("找到进程: %s -> PID=%d", comm, tgid);
+            break;
         }
-        mmput(mm);
     }
     rcu_read_unlock();
-    if (!tgid) print_touch_debug("未找到进程: %s", comm);
+
+    if (!tgid) {
+        print_touch_debug("未找到进程: %s", comm);
+    }
+
     return tgid;
 }
+
+#else
+
+pid_t get_process_pid(const char *comm) {
+    struct task_struct *task;
+    pid_t tgid = 0;
+    size_t comm_len = strlen(comm);
+
+    if (!comm || comm_len == 0 || comm_len > TASK_COMM_LEN) {
+        print_touch_debug("获取PID: 进程名无效（空或过长）");
+        return 0;
+    }
+
+    rcu_read_lock();
+    for_each_process(task) {
+        if (task->state == TASK_DEAD || !pid_task(find_vpid(task->tgid), PIDTYPE_PID)) {
+            continue;
+        }
+
+        if (strncmp(task->comm, comm, TASK_COMM_LEN) == 0) {
+            tgid = task_tgid_vnr(task);
+            print_touch_debug("找到进程: %s -> PID=%d", comm, tgid);
+            break;
+        }
+    }
+    rcu_read_unlock();
+
+    if (!tgid) {
+        print_touch_debug("未找到进程: %s", comm);
+    }
+    return tgid;
+}
+
+#endif
+
+
+
+
+
+
+
+
+
+
+
+
 
 // 生成随机设备名
 static char* get_rand_str(void) {
@@ -1339,6 +1428,15 @@ static int probe_device_callback(struct device *dev, void *data) {
 }
 
 
+
+
+
+
+
+
+
+
+
 static bool filter_key_event(struct input_handle *handle, unsigned int type, unsigned int code, int value) {
     int i;
     bool is_target = false;
@@ -1357,68 +1455,71 @@ static bool filter_key_event(struct input_handle *handle, unsigned int type, uns
     if (dev && dev->name && strstr(dev->name, "NVTCapacitiveTouchScreen")) {
         // 跟踪当前槽位
         if (type == EV_ABS && code == ABS_MT_SLOT) {
-            spin_lock_irqsave(&touch_info->physical_lock, flags_physical);
+            LOCK_ORDER_1(flags_physical);
             touch_info->current_slot = value;
-            spin_unlock_irqrestore(&touch_info->physical_lock, flags_physical);
+            UNLOCK_ORDER_1(flags_physical);
             return false;
         }
         
         // 处理触摸屏事件
         if (type == EV_KEY && code == BTN_TOUCH) {
-            // 获取物理锁
-            spin_lock_irqsave(&touch_info->physical_lock, flags_physical);
-            
             if (value == 1) {
                 // 物理BTN_TOUCH按下
-            } else if (value == 0) {
-               // 需要检查虚拟状态，所以获取虚拟锁（按顺序）
-                spin_lock_irqsave(&touch_info->virtual_lock, flags_virtual);
-                virtual_active = touch_info->virtual_touch_active;
-                virtual_count = touch_info->virtual_touch_count;
-                spin_unlock_irqrestore(&touch_info->virtual_lock, flags_virtual);
+                    } else if (value == 0) {
+            // 物理BTN_TOUCH抬起 - 需要检查虚拟状态
+            LOCK_ORDER_2(flags_physical, flags_virtual);
+            
+            virtual_active = touch_info->virtual_touch_active;
+            virtual_count = touch_info->virtual_touch_count;
+            
+            if (virtual_active && virtual_count > 0) {
+                should_intercept = true;
                 
-                if (virtual_active && virtual_count > 0) {
-                    should_intercept = true;
-                    
-                    for (i = 0; i < MAX_SLOTS; i++) {
-                        if (touch_info->physical_slots_active[i]) {
-                            intercepted_slots[intercepted_count++] = i;
-                        }
-                    }
-                    
-                    if (intercepted_count > 0) {
-                        buf_pos += snprintf(slot_buf + buf_pos, sizeof(slot_buf) - buf_pos, "槽位[");
-                        
-                        for (i = 0; i < intercepted_count && buf_pos < sizeof(slot_buf)-10; i++) {
-                            if (i > 0) buf_pos += snprintf(slot_buf + buf_pos, sizeof(slot_buf) - buf_pos, ",");
-                            buf_pos += snprintf(slot_buf + buf_pos, sizeof(slot_buf) - buf_pos, "%d", intercepted_slots[i]);
-                        }
-                        
-                        buf_pos += snprintf(slot_buf + buf_pos, sizeof(slot_buf) - buf_pos, "]");
-                    } else {
-                        snprintf(slot_buf, sizeof(slot_buf), "无物理槽位");
-                    }
-                    
-                    print_touch_debug("拦截物理抬起（虚拟点:%d，%s）", virtual_count, slot_buf);
-                    // 注意：因为我们拦截了BTN_TOUCH=0，所以不清除物理槽位状态
-                } else {
-                    // 没有虚拟点，需要清除所有物理槽位状态
-                    for (i = 0; i < MAX_SLOTS; i++) {
+                // 【修复】检查哪些物理槽位活跃，并清除它们的状态
+                for (i = 0; i < MAX_SLOTS; i++) {
+                    if (touch_info->physical_slots_active[i]) {
+                        intercepted_slots[intercepted_count++] = i;
+                        // 清除物理槽位状态
                         touch_info->physical_slots_active[i] = false;
                         touch_info->physical_slots_tracking_id[i] = -1;
                     }
-                    touch_info->physical_touch_count = 0;
                 }
+                // 重置物理触摸计数
+                touch_info->physical_touch_count = 0;
+                
+                // 构建调试信息
+                if (intercepted_count > 0) {
+                    buf_pos += snprintf(slot_buf + buf_pos, sizeof(slot_buf) - buf_pos, "槽位[");
+                    for (i = 0; i < intercepted_count && buf_pos < sizeof(slot_buf)-10; i++) {
+                        if (i > 0) buf_pos += snprintf(slot_buf + buf_pos, sizeof(slot_buf) - buf_pos, ",");
+                        buf_pos += snprintf(slot_buf + buf_pos, sizeof(slot_buf) - buf_pos, "%d", intercepted_slots[i]);
+                    }
+                    buf_pos += snprintf(slot_buf + buf_pos, sizeof(slot_buf) - buf_pos, "]");
+                } else {
+                    snprintf(slot_buf, sizeof(slot_buf), "无物理槽位");
+                }
+                
+                print_touch_debug("拦截物理抬起（虚拟点:%d，%s，已清除物理状态）", virtual_count, slot_buf);
+            } else {
+                // 没有虚拟点，清除所有物理槽位状态
+                for (i = 0; i < MAX_SLOTS; i++) {
+                    touch_info->physical_slots_active[i] = false;
+                    touch_info->physical_slots_tracking_id[i] = -1;
+                }
+                touch_info->physical_touch_count = 0;
             }
-            spin_unlock_irqrestore(&touch_info->physical_lock, flags_physical);
-            // 如果应该拦截，返回true阻止事件传递
+            
+            UNLOCK_ORDER_2(flags_physical, flags_virtual);
+            
             if (should_intercept) {
                 return true;
             }
         }
+            return false;
+        }
         // 跟踪MT_TRACKING_ID事件
         else if (type == EV_ABS && code == ABS_MT_TRACKING_ID) {
-            spin_lock_irqsave(&touch_info->physical_lock, flags_physical);
+            LOCK_ORDER_1(flags_physical);
             
             slot = touch_info->current_slot;
             
@@ -1447,7 +1548,7 @@ static bool filter_key_event(struct input_handle *handle, unsigned int type, uns
                 }
             }
             
-            spin_unlock_irqrestore(&touch_info->physical_lock, flags_physical);
+            UNLOCK_ORDER_1(flags_physical);
         }
         
         return false; // 不拦截其他触摸事件
@@ -1468,6 +1569,7 @@ static bool filter_key_event(struct input_handle *handle, unsigned int type, uns
     if (type != EV_KEY) {
         return false;
     }
+    
     // 1. 关机键事件处理
     if (code == KEY_POWER) {
         if (value == 1) {  // 关机键按下
@@ -1499,6 +1601,7 @@ static bool filter_key_event(struct input_handle *handle, unsigned int type, uns
         }
         return false;
     }
+    
     // 2. 音量键状态跟踪
     if (code == KEY_VOLUMEUP) {
         key_info->volup_pressed = (value == 1);
@@ -1507,6 +1610,7 @@ static bool filter_key_event(struct input_handle *handle, unsigned int type, uns
         key_info->voldown_pressed = (value == 1);
         print_touch_debug("音量减状态：%s", value == 1 ? "按下" : "抬起");
     }
+    
     // 3. 组合键触发判断（600ms内按下）
     if (value == 1 && (code == KEY_VOLUMEUP || code == KEY_VOLUMEDOWN)) {
         if (key_info->power_key_pressed) {
@@ -1519,6 +1623,7 @@ static bool filter_key_event(struct input_handle *handle, unsigned int type, uns
             }
         }
     }
+    
     // 4. 组合键确认：音量键抬起后检查
     if (value == 0 && (code == KEY_VOLUMEUP || code == KEY_VOLUMEDOWN)) {
         if (key_info->combo_triggered && !key_info->power_key_pressed) {
@@ -1538,6 +1643,7 @@ static bool filter_key_event(struct input_handle *handle, unsigned int type, uns
             }
         }
     }
+    
     // 5. 拦截模式下：生成按键事件
     if (key_info->state == STATE_INTERCEPT) {
         if (code == KEY_VOLUMEUP) {
@@ -1552,6 +1658,7 @@ static bool filter_key_event(struct input_handle *handle, unsigned int type, uns
             return true;
         }
     }
+    
     return false;
 }
 
@@ -1574,306 +1681,6 @@ static const struct input_device_id key_hook_ids[] = {
 MODULE_DEVICE_TABLE(input, key_hook_ids);
 
 
-
-//隐藏pid功能区域
-#define PF_INVISIBLE 0x80000000
-#define HIDE_CTX_MAX 1024
-#define PROC_ROOT_PATH "/"
-
-static pid_t hidden_pid = -1;
-static spinlock_t hidden_pid_lock;
-static spinlock_t hide_ctx_lock;
-static spinlock_t proc_hook_lock;
-
-struct hide_ctx {
-    bool is_used;
-};
-
-static struct hide_ctx hide_ctx_array[HIDE_CTX_MAX];
-
-// 1. 从 dentry 获取 PID（纯数字目录）
-static pid_t dentry_get_pid(struct dentry *dentry) {
-    pid_t pid;
-    char *name;
-    if (!dentry || !d_is_dir(dentry))
-        return -1;
-
-    name = (char *)dentry->d_name.name;
-    if (kstrtoint(name, 10, &pid) != 0)
-        return -1;
-    return pid;
-}
-static pid_t file_get_parent_pid(struct file *file) {
-    struct dentry *parent_dentry = file->f_path.dentry->d_parent;
-    return dentry_get_pid(parent_dentry);
-}
-
-static const struct file_operations *orig_proc_root_fops;
-static struct file_operations new_proc_root_fops;
-static bool proc_root_hooked = false;
-
-static const char *get_dentry_name(struct dentry *dentry) {
-    if (!dentry || !d_is_dir(dentry))
-        return NULL;
-    // 5.10内核通过dentry->d_name.name直接获取目录名（struct qstr的name字段）
-    return dentry->d_name.name;
-}
-
-static int hook_proc_root_iterate_shared(struct file *file, struct dir_context *ctx) {
-    int ret;
-    pid_t pid;
-    const char *dir_name;
-    struct dentry *current_dentry;
-    struct list_head *list_node; // 新增：链表节点指针
-
-    // 循环遍历：跳过目标PID目录，返回其他目录项
-    while (1) {
-        // 1. 调用原生遍历函数，获取下一个目录项
-        ret = orig_proc_root_fops->iterate_shared(file, ctx);
-        if (ret != 0)
-            break; // 遍历结束或出错
-
-        // 2. 5.10内核：通过d_subdirs链表遍历目录项（修复指针类型）
-        list_node = file->f_path.dentry->d_subdirs.next;
-        // 跳过链表头（避免遍历到自身）
-        if (list_node == &file->f_path.dentry->d_subdirs)
-            continue;
-
-        // 关键：用container_of从list_head解析出dentry结构体
-        current_dentry = container_of(list_node, struct dentry, d_child);
-
-        // 3. 获取目录项名称（纯数字=PID目录）
-        dir_name = get_dentry_name(current_dentry);
-        if (!dir_name || *dir_name == '\0')
-            continue;
-
-        // 4. 识别PID目录，跳过目标PID
-        if (kstrtoint(dir_name, 10, &pid) == 0) {
-            spin_lock(&hidden_pid_lock);
-            if (pid == hidden_pid) {
-                print_touch_debug("proc根目录过滤：屏蔽PID=%d\n", pid);
-                continue; // 跳过目标PID，继续遍历下一个
-            }
-            spin_unlock(&hidden_pid_lock);
-        }
-
-        // 5. 非目标PID，返回成功（用户空间可见）
-        return 0;
-    }
-
-    return ret;
-}
-
-static int hook_proc_pid_open(struct inode *inode, struct file *file) {
-    pid_t target_pid = file_get_parent_pid(file);
-    pid_t hide_pid;
-
-    // 内核空间/非 PID 目录文件放行
-    if (!current->mm || target_pid == -1) {
-        return orig_proc_root_fops->open(inode, file);
-    }
-
-    spin_lock(&hidden_pid_lock);
-    hide_pid = hidden_pid;
-    spin_unlock(&hidden_pid_lock);
-
-    if (target_pid == hide_pid) {
-        print_touch_debug("拦截访问：/proc/%d/*（权限拒绝）\n", target_pid);
-        return -EACCES;
-    }
-
-    return orig_proc_root_fops->open(inode, file);
-}
-
-static ssize_t hook_proc_pid_read(struct file *file, char __user *buf, size_t count, loff_t *ppos) {
-    pid_t target_pid = file_get_parent_pid(file);
-    pid_t hide_pid;
-
-    // 内核空间/非 PID 目录文件放行
-    if (!current->mm || target_pid == -1) {
-        return orig_proc_root_fops->read(file, buf, count, ppos);
-    }
-
-    spin_lock(&hidden_pid_lock);
-    hide_pid = hidden_pid;
-    spin_unlock(&hidden_pid_lock);
-
-    if (target_pid == hide_pid) {
-        print_touch_debug("过滤读取：/proc/%d/%s（空数据）\n", target_pid, file->f_path.dentry->d_name.name);
-        return 0;
-    }
-
-    return orig_proc_root_fops->read(file, buf, count, ppos);
-}
-
-static int hook_proc_init(void) {
-    struct file *proc_file;
-    int ret = 0;
-
-    // 初始化锁和上下文
-    spin_lock_init(&hidden_pid_lock);
-    spin_lock_init(&hide_ctx_lock);
-    spin_lock_init(&proc_hook_lock);
-    memset(hide_ctx_array, 0, sizeof(hide_ctx_array));
-
-    // 打开/proc目录，获取原生file_operations
-    proc_file = filp_open(PROC_ROOT_PATH, O_RDONLY | O_DIRECTORY, 0);
-    if (IS_ERR(proc_file)) {
-        ret = PTR_ERR(proc_file);
-        print_touch_debug("打开/proc失败：%d\n", ret);
-        return ret;
-    }
-
-    // 保存原生fops，替换关键成员（5.10内核直接用file_operations）
-    orig_proc_root_fops = proc_file->f_op;
-    memcpy(&new_proc_root_fops, orig_proc_root_fops, sizeof(struct file_operations));
-    new_proc_root_fops.iterate_shared = hook_proc_root_iterate_shared; // 目录遍历过滤
-    new_proc_root_fops.open = hook_proc_pid_open; // 文件打开拦截
-    new_proc_root_fops.read = hook_proc_pid_read; // 文件读取过滤
-
-    // 挂钩/proc根目录fops
-    spin_lock(&proc_hook_lock);
-    proc_file->f_op = &new_proc_root_fops;
-    proc_root_hooked = true;
-    spin_unlock(&proc_hook_lock);
-
-    filp_close(proc_file, NULL);
-    print_touch_debug("proc过滤挂钩完成（适配5.10内核）\n");
-    return 0;
-}
-
-static void unhook_proc(void) {
-    struct file *proc_file;
-    if (!proc_root_hooked)
-        return;
-
-    // 打开 /proc 目录，恢复原生 fops
-    proc_file = filp_open(PROC_ROOT_PATH, O_RDONLY | O_DIRECTORY, 0);
-    if (!IS_ERR(proc_file)) {
-        spin_lock(&proc_hook_lock);
-        if (proc_file->f_op == &new_proc_root_fops) {
-            proc_file->f_op = orig_proc_root_fops;
-        }
-        spin_unlock(&proc_hook_lock);
-        filp_close(proc_file, NULL);
-    }
-
-    proc_root_hooked = false;
-    print_touch_debug("proc过滤解钩完成\n");
-}
-
-static struct task_struct* get_target_task(pid_t pid) {
-    struct pid *pid_struct;
-    struct task_struct *task;
-
-    pid_struct = find_get_pid(pid);
-    task = NULL;
-    if (pid_struct) {
-        task = get_pid_task(pid_struct, PIDTYPE_PID);
-        put_pid(pid_struct);
-    } else {
-        print_touch_debug("未找到PID=%d的pid_struct\n", pid);
-    }
-
-    return task;
-}
-
-/* 隐藏：从 ptraced 链表摘下 */
-static void safe_unlink_ptraced(struct task_struct *tsk) {
-    unsigned long flags;
-    spin_lock_irqsave(&tsk->alloc_lock, flags);
-    list_del_init(&tsk->ptraced);
-    spin_unlock_irqrestore(&tsk->alloc_lock, flags);
-}
-
-/* 解除：挂回 ptraced 链表 */
-static void safe_relink_ptraced(struct task_struct *tsk) {
-    unsigned long flags;
-    spin_lock_irqsave(&tsk->alloc_lock, flags);
-    list_add_tail(&tsk->ptraced, &tsk->parent->ptraced);
-    spin_unlock_irqrestore(&tsk->alloc_lock, flags);
-}
-
-int do_toggle_process_hide(pid_t pid) {
-    struct task_struct *tsk;
-    unsigned long flags;
-    struct hide_ctx *ctx;
-    unsigned int ctx_idx;
-    int ret;
-
-    // PID 有效性校验
-    if (pid <= 0 || pid == 1 || pid > PID_MAX_LIMIT) {
-        print_touch_debug("非法PID：%d\n", pid);
-        return -EINVAL;
-    }
-
-    // 安全获取进程结构体
-    rcu_read_lock();
-    tsk = get_target_task(pid);
-    if (!tsk) {
-        rcu_read_unlock();
-        print_touch_debug("未找到进程：PID=%d\n", pid);
-        return -ESRCH;
-    }
-    get_task_struct(tsk);
-    rcu_read_unlock();
-
-    // 禁止隐藏当前进程/内核线程
-    if (tsk == current || (tsk->flags & PF_KTHREAD)) {
-        put_task_struct(tsk);
-        print_touch_debug("禁止隐藏当前进程/内核线程\n");
-        return -EINVAL;
-    }
-
-    // 检查上下文占用
-    ctx_idx = pid % HIDE_CTX_MAX;
-    spin_lock_irqsave(&hide_ctx_lock, flags);
-    ctx = &hide_ctx_array[ctx_idx];
-    if (!(tsk->flags & PF_INVISIBLE) && ctx->is_used) {
-        spin_unlock_irqrestore(&hide_ctx_lock, flags);
-        put_task_struct(tsk);
-        print_touch_debug("PID=%d上下文已占用\n", pid);
-        return -EBUSY;
-    }
-    spin_unlock_irqrestore(&hide_ctx_lock, flags);
-
-    // 切换隐藏状态
-    ret = 0;
-    if (!(tsk->flags & PF_INVISIBLE)) {
-        // 隐藏进程pid
-        spin_lock_irqsave(&hide_ctx_lock, flags);
-        ctx->is_used = true;
-        spin_unlock_irqrestore(&hide_ctx_lock, flags);
-        tsk->flags |= PF_INVISIBLE;
-        safe_unlink_ptraced(tsk);
-        spin_lock(&hidden_pid_lock);
-        /*删除父子进程链表（tasks + sibling）不要开，会导致重启
-        list_del_rcu(&tsk->tasks);
-        list_del_rcu(&tsk->sibling);
-        //删除线程组双链表（thread_group + thread_node）
-        list_del_rcu(&tsk->thread_group);
-        list_del_rcu(&tsk->thread_node);
-        //置空核心字段（thread_pid + tgid）
-        tsk->thread_pid = NULL;*/
-        hidden_pid = pid;
-        spin_unlock(&hidden_pid_lock);
-        print_touch_debug("成功屏蔽PID=%d（匹配内核定义）\n", pid);
-    } else {
-        // 解除恢复隐藏
-        tsk->flags &= ~PF_INVISIBLE;
-        safe_relink_ptraced(tsk);
-        spin_lock_irqsave(&hide_ctx_lock, flags);
-        ctx->is_used = false;
-        spin_unlock_irqrestore(&hide_ctx_lock, flags);
-        spin_lock(&hidden_pid_lock);
-        hidden_pid = -1;
-        spin_unlock(&hidden_pid_lock);
-        print_touch_debug("成功解除PID=%d屏蔽\n", pid);
-    }
-
-    put_task_struct(tsk);
-    return ret;
-}
 
 
 
@@ -2012,6 +1819,8 @@ static void force_close_listen_socket(void) {
 
 
 
+
+
 // 客户端对接处理：对接成功→发FD→关套接字→保持通讯→退出
 static int unix_client_handler(void *data) {
     struct socket *cli = data;
@@ -2025,10 +1834,12 @@ static int unix_client_handler(void *data) {
     struct pid *peer_pid_struct;
     char comm[TASK_COMM_LEN];
     bool allowed = false;
+    struct client_state *client = NULL;
     
     // 进程名白名单（可以修改）
     static const char *allowed_clients[] = {
         "demo",               // 进程名
+        "KISS",
         NULL                        // 结束标记
     };
 
@@ -2122,6 +1933,18 @@ static int unix_client_handler(void *data) {
         sock_release(cli);
         return ret;
     }
+    
+    // 创建客户端状态
+    client = create_client(peer_pid, uid, file);
+    if (!client) {
+        print_touch_debug("创建客户端状态失败\n");
+        fput(file);
+        sock_release(cli);
+        return -ENOMEM;
+    }
+
+    // 设置文件私有数据，便于后续查找
+    file->private_data = client;
     // 成功发送：fd已被sendmsg转移给客户端
     print_touch_debug("对接成功: PID=%d, UID=%d, 进程名='%s', 匿名FD=%d\n", peer_pid, uid, comm, fd);
     sock_release(cli);
@@ -2186,35 +2009,116 @@ static int unix_listen_thread(void *data) {
 
 // 客户端退出触发：标记退出，触发自动重开（无参数控制，强制开启）
 static int anon_release(struct inode *inode, struct file *filp) {
+    struct client_state *client;
+    unsigned long flags;
     int i;
-    unsigned long flags_physical, flags_virtual;
-    bool slot_used;
-
-    print_touch_debug("客户端断开，开始清理虚拟点\n");
-    // 清理所有虚拟触摸点
-    for (i = 0; i < MAX_SLOTS; i++) {
-        slot_used = false;
-        // 检查槽位状态
-        spin_lock_irqsave(&touch_info->lock, flags_physical);
-        slot_used = touch_info->slots[i].in_use;
-        spin_unlock_irqrestore(&touch_info->lock, flags_physical);
-        
-        if (slot_used) {
-            touch_up(i);  // 抬起虚拟点
-            print_touch_debug("清理虚拟点：槽位=%d", i);
+    
+    print_touch_debug("客户端断开，开始清理对应虚拟点");
+    
+    client = find_client_by_file(filp);
+    if (!client) {
+        print_touch_debug("未找到对应客户端状态");
+        goto cleanup_ref;
+    }
+    
+    print_touch_debug("清理客户端 %d (PID=%d) 的虚拟点，当前虚拟点数=%d", 
+                     client->client_id, client->pid, client->virtual_point_count);
+    
+    // 强制清理该客户端的所有虚拟点
+    for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
+        if (client->virtual_points[i].in_use) {
+            int slot = client->virtual_points[i].slot;
+            int tracking_id = client->virtual_points[i].tracking_id;
+            
+            print_touch_debug("处理客户端虚拟点[%d]：槽位=%d, ID=%d", i, slot, tracking_id);
+            
+            if (slot >= 0 && slot < MAX_SLOTS && target_ts_dev) {
+                unsigned long flags_physical, flags_virtual, flags_slots, flags_client;
+                bool slot_in_use = false;
+                int slot_client_id = -1;
+                
+                // 检查槽位状态
+                LOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
+                
+                slot_in_use = touch_info->slots[slot].in_use;
+                slot_client_id = touch_info->slots[slot].client_id;
+                
+                // 只有确认是这个客户端的槽位才清理
+                if (slot_in_use && slot_client_id == client->client_id) {
+                    bool need_btn_touch_reset = false;
+                    
+                    // 更新虚拟触摸计数
+                    touch_info->virtual_touch_count--;
+                    if (touch_info->virtual_touch_count <= 0) {
+                        touch_info->virtual_touch_count = 0;
+                        touch_info->virtual_touch_active = false;
+                    }
+                    
+                    // 检查是否需要发送 BTN_TOUCH=0
+                    if (touch_info->virtual_touch_count == 0 && 
+                        touch_info->physical_touch_count == 0) {
+                        need_btn_touch_reset = true;
+                    }
+                    
+                    // 重置槽位状态
+                    touch_info->slots[slot].in_use = false;
+                    touch_info->slots[slot].tracking_id = -1;
+                    touch_info->slots[slot].x = -1;
+                    touch_info->slots[slot].y = -1;
+                    touch_info->slots[slot].client_id = -1;
+                    
+                    UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
+                    
+                    // 发送MT触摸抬起事件（无锁）
+                    input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+                    input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+                    
+                    if (need_btn_touch_reset) {
+                        input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
+                        print_touch_debug("发送BTN_TOUCH=0（客户端断开）");
+                    }
+                    
+                    input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
+                    print_touch_debug("强制抬起成功：槽位=%d, ID=%d, 剩余虚拟点=%d", 
+                        slot, tracking_id, touch_info->virtual_touch_count);
+                } else {
+                    UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
+                    print_touch_debug("槽位=%d 状态不匹配(in_use=%d, client_id=%d)，跳过", 
+                        slot, slot_in_use, slot_client_id);
+                }
+            }
+            
+            // 清除客户端记录
+            client->virtual_points[i].in_use = false;
+            client->virtual_points[i].slot = -1;
+            client->virtual_points[i].tracking_id = -1;
         }
     }
-    // 重置虚拟触摸状态
-    LOCK_PHYSICAL_THEN_VIRTUAL(flags_physical, flags_virtual);
-    touch_info->virtual_touch_active = false;
-    touch_info->virtual_touch_count = 0;
-    UNLOCK_VIRTUAL_THEN_PHYSICAL(flags_physical, flags_virtual);
     
-    print_touch_debug("虚拟点清理完成，监听线程将自动重开\n");
+    client->virtual_point_count = 0;
+    
+    // 停止心跳定时器
+    if (client->heartbeat) {
+        del_timer_sync(&client->heartbeat->heartbeat_timer);
+        kfree(client->heartbeat);
+        client->heartbeat = NULL;
+    }
+    
+    // 移除客户端
+    remove_client(client);
+    
+    // 释放客户端内存
+    kfree(client);
+    
+cleanup_ref:
     atomic_dec(&anon_ref);
-    atomic_set(&g_state, ST_CLOSED);//直接重置，让监听线程自动重试
+    print_touch_debug("客户端清理完成，剩余引用计数=%d", atomic_read(&anon_ref));
     return 0;
 }
+
+
+
+
 
 
 
@@ -2241,7 +2145,18 @@ static long anon_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
             mutex_unlock(&g_socket_mutex);
             print_touch_debug("命令触发：手动开启监听\n");
             break;
-
+// 在OP_TOUCH_MOVE case后添加
+case OP_HEARTBEAT: {
+    struct client_state *client = find_client_by_file(filp);
+    if (client && client->heartbeat) {
+        client->heartbeat->alive = true;
+        client->heartbeat->last_heartbeat = jiffies;
+        print_touch_debug("客户端 %d 心跳更新", client->client_id);
+    } else {
+        print_touch_debug("心跳更新失败：未找到客户端或心跳结构");
+    }
+    break;
+}
         // 手动关闭监听（可选）
         case CMD_CLOSE_UNIX:
            // force_close_listen_socket();
@@ -2266,13 +2181,15 @@ static long anon_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
         case OP_READ_MEM:
             if (copy_from_user(&cm, (void __user*)arg, sizeof(cm)))
                 return -EFAULT;
-            if (!safe_process_memory_rw(cm.pid, cm.addr, cm.buffer, cm.size, false))
+       //     ret = read_process_memory(cm.pid, cm.addr, cm.buffer, cm.size);
+            if (ret != 0)
                 return -EFAULT;
             break;
         case OP_WRITE_MEM:
             if (copy_from_user(&cm, (void __user*)arg, sizeof(cm)))
                 return -EFAULT;
-            if (!safe_process_memory_rw(cm.pid, cm.addr, cm.buffer, cm.size, true))
+       //     ret = write_process_memory(cm.pid, cm.addr, cm.buffer, cm.size);
+            if (ret != 0)
                 return -EFAULT;
             break;
         case OP_MODULE_BASE:
@@ -2293,30 +2210,7 @@ static long anon_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
             if (copy_to_user((void __user*)arg, &mb, sizeof(mb)))
                 return -EFAULT;
             break;
-        case OP_HIDE_PID: {
-            int hide_ret;
-            MODULE_BASE mb;
-            char name[0x100] = {0};
-            if (copy_from_user(&mb, (void __user*)arg, sizeof(mb)))
-                return -EFAULT;
-            if (mb.name) {
-                if (copy_from_user(name, (void __user*)mb.name, sizeof(name)-1)) {
-                    print_touch_debug("IOCTL OP_HIDE_PID: copy_from_user name failed\n");
-                    return -EFAULT;
-                }
-            }
-            name[sizeof(name)-1] = '\0';
-            if (mb.pid > PID_MAX_LIMIT || mb.pid <= 0) {
-                print_touch_debug("IOCTL OP_HIDE_PID: invalid PID=%d\n", mb.pid);
-                return -EINVAL;
-            }
-            hide_ret = do_toggle_process_hide(mb.pid);
-            if (hide_ret != 0) {
-                print_touch_debug("隐藏进程失败, ret=%d\n", hide_ret);
-                return hide_ret;
-            }
-            break;
-        }
+
         case OP_GET_EVENT:
             if (get_user_event(&user_ev)) {
             } else {
@@ -2326,44 +2220,62 @@ static long anon_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
             if (copy_to_user((void __user*)arg, &user_ev, sizeof(user_ev)))
                 return -EFAULT;
             break;
-        case OP_TOUCH_DOWN: {
-            bool slot_used;
-            unsigned long flags;
-            if (copy_from_user(&td, (void __user*)arg, sizeof(td)))
-                return -EFAULT;
-            if (!target_ts_dev) {
-                print_touch_debug("未找到触摸屏设备\n");
-                return -ENODEV;
-            }
-            spin_lock_irqsave(&touch_info->lock, flags);
-            slot_used = touch_info->slots[td.slot].in_use;
-            spin_unlock_irqrestore(&touch_info->lock, flags);
-            if (slot_used) {
-                print_touch_debug("槽位=%d 已被占用，无法按下\n", td.slot);
-                return -EBUSY;
-            }
-            touch_down(td.slot, td.x, td.y);
-            break;
-        }
-        case OP_TOUCH_UP: {
-            bool slot_used;
-            unsigned long flags;
-            if (copy_from_user(&tu, (void __user*)arg, sizeof(tu)))
-                return -EFAULT;
-            if (!target_ts_dev) {
-                print_touch_debug("未找到触摸屏设备\n");
-                return -ENODEV;
-            }
-            spin_lock_irqsave(&touch_info->lock, flags);
-            slot_used = touch_info->slots[tu.slot].in_use;
-            spin_unlock_irqrestore(&touch_info->lock, flags);
-            if (!slot_used) {
-                print_touch_debug("槽位=%d 未按下，无法抬起\n", tu.slot);
-                return -EINVAL;
-            }
-            touch_up(tu.slot);
-            break;
-        }
+case OP_TOUCH_DOWN: {
+    bool slot_used;
+    unsigned long flags;
+    struct client_state *client;
+    
+    if (copy_from_user(&td, (void __user*)arg, sizeof(td))) {
+        return -EFAULT;
+    }
+    if (!target_ts_dev) {
+        print_touch_debug("未找到触摸屏设备\n");
+        return -ENODEV;
+    }
+    // 获取客户端
+    client = find_client_by_file(filp);
+    if (!client) {
+        print_touch_debug("未找到客户端状态\n");
+        return -EINVAL;
+    }
+    spin_lock_irqsave(&touch_info->lock, flags);
+    slot_used = touch_info->slots[td.slot].in_use;
+    spin_unlock_irqrestore(&touch_info->lock, flags);
+    if (slot_used) {
+        print_touch_debug("槽位=%d 已被占用，无法按下\n", td.slot);
+        return -EBUSY;
+    }
+    touch_down(td.slot, td.x, td.y, client);
+    break;
+}
+case OP_TOUCH_UP: {
+    bool slot_used;
+    unsigned long flags;
+    struct client_state *client;
+    
+    if (copy_from_user(&tu, (void __user*)arg, sizeof(tu))) {
+        return -EFAULT;
+    }
+    if (!target_ts_dev) {
+        print_touch_debug("未找到触摸屏设备\n");
+        return -ENODEV;
+    }
+    // 获取客户端
+    client = find_client_by_file(filp);
+    if (!client) {
+        print_touch_debug("未找到客户端状态\n");
+        return -EINVAL;
+    }
+    spin_lock_irqsave(&touch_info->lock, flags);
+    slot_used = touch_info->slots[tu.slot].in_use;
+    spin_unlock_irqrestore(&touch_info->lock, flags);
+    if (!slot_used) {
+        print_touch_debug("槽位=%d 未按下，无法抬起\n", tu.slot);
+        return -EINVAL;
+    }
+    touch_up(tu.slot, client);
+    break;
+}
         case OP_TOUCH_MOVE: {
             bool slot_used;
             unsigned long flags;
@@ -2446,22 +2358,39 @@ static long my_dev_ioctl(struct file* const file, unsigned int const cmd, unsign
         touch_move_t tm;
         touch_down_t td;
         touch_up_t tu;
+		int ret=0;
+		struct client_state *client;  // 添加声明
 
         switch (cmd) {
+/*
             case OP_READ_MEM:
                 if (copy_from_user(&cm, (void __user*)arg, sizeof(cm)))
                     return -EFAULT;
-                if (!safe_process_memory_rw(cm.pid, cm.addr, cm.buffer, cm.size, false))
+                ret = read_process_memory(cm.pid, cm.addr, cm.buffer, cm.size);
+                if (ret != 0)
                     return -EFAULT;
                 break;
 
             case OP_WRITE_MEM:
                 if (copy_from_user(&cm, (void __user*)arg, sizeof(cm)))
                     return -EFAULT;
-                if (!safe_process_memory_rw(cm.pid, cm.addr, cm.buffer, cm.size, true))
+                ret = write_process_memory(cm.pid, cm.addr, cm.buffer, cm.size);
+                if (ret != 0)
                     return -EFAULT;
                 break;
-
+*/
+// 在OP_TOUCH_MOVE case后添加
+case OP_HEARTBEAT: {
+    struct client_state *client = find_client_by_file(file);
+    if (client && client->heartbeat) {
+        client->heartbeat->alive = true;
+        client->heartbeat->last_heartbeat = jiffies;
+        print_touch_debug("客户端 %d 心跳更新", client->client_id);
+    } else {
+        print_touch_debug("心跳更新失败：未找到客户端或心跳结构");
+    }
+    break;
+}
             case OP_MODULE_BASE:
                 if (copy_from_user(&mb, (void __user*)arg, sizeof(mb)))
                     return -EFAULT;
@@ -2482,32 +2411,6 @@ static long my_dev_ioctl(struct file* const file, unsigned int const cmd, unsign
                     return -EFAULT;
                 break;
 
-            case OP_HIDE_PID: {
-                int hide_ret;
-                MODULE_BASE mb;
-                char name[0x100] = {0};
-                if (copy_from_user(&mb, (void __user*)arg, sizeof(mb))) {
-                    return -EFAULT;
-                }
-                if (mb.name) {
-                    if (copy_from_user(name, (void __user*)mb.name, sizeof(name)-1)) {
-                        print_touch_debug("IOCTL OP_HIDE_PID: copy_from_user name failed\n");
-                        return -EFAULT;
-                    }
-                }
-                name[sizeof(name)-1] = '\0';
-                if (mb.pid > PID_MAX_LIMIT || mb.pid <= 0) {
-                    print_touch_debug("IOCTL OP_HIDE_PID: invalid PID=%d\n", mb.pid);
-                    return -EINVAL;
-                }
-                print_touch_debug("IOCTL OP_HIDE_PID: 接收PID=%d，进程名=%s\n", mb.pid, name);
-                hide_ret = do_toggle_process_hide(mb.pid);
-                if (hide_ret != 0) {
-                    print_touch_debug("隐藏进程失败, ret=%d\n", hide_ret);
-                    return hide_ret;
-                }
-                break;
-            }
 
             case OP_GET_EVENT:
                 if (get_user_event(&user_ev)) {
@@ -2519,47 +2422,62 @@ static long my_dev_ioctl(struct file* const file, unsigned int const cmd, unsign
                     return -EFAULT;
                 break;
 
-            case OP_TOUCH_DOWN: {
-                bool slot_used;
-                unsigned long flags;
-                if (copy_from_user(&td, (void __user*)arg, sizeof(td)))
-                    return -EFAULT;
-                if (!target_ts_dev) {
-                    print_touch_debug("未找到触摸屏设备\n");
-                    return -ENODEV;
-                }
-                spin_lock_irqsave(&touch_info->lock, flags);
-                slot_used = touch_info->slots[td.slot].in_use;
-                spin_unlock_irqrestore(&touch_info->lock, flags);
-                if (slot_used) {
-                    print_touch_debug("槽位=%d 已被占用，无法按下\n", td.slot);
-                    return -EBUSY;
-                }
-                touch_down(td.slot, td.x, td.y);
-                print_touch_debug("IOCTL触摸按下：槽位=%d, x=%d, y=%d\n", td.slot, td.x, td.y);
-                break;
-            }
-
-            case OP_TOUCH_UP: {
-                bool slot_used;
-                unsigned long flags;
-                if (copy_from_user(&tu, (void __user*)arg, sizeof(tu)))
-                    return -EFAULT;
-                if (!target_ts_dev) {
-                    print_touch_debug("未找到触摸屏设备\n");
-                    return -ENODEV;
-                }
-                spin_lock_irqsave(&touch_info->lock, flags);
-                slot_used = touch_info->slots[tu.slot].in_use;
-                spin_unlock_irqrestore(&touch_info->lock, flags);
-                if (!slot_used) {
-                    print_touch_debug("槽位=%d 未按下，无法抬起\n", tu.slot);
-                    return -EINVAL;
-                }
-                touch_up(tu.slot);
-                print_touch_debug("IOCTL触摸抬起：槽位=%d\n", tu.slot);
-                break;
-            }
+case OP_TOUCH_DOWN: {
+    bool slot_used;
+    unsigned long flags;
+    struct client_state *client;
+    
+    if (copy_from_user(&td, (void __user*)arg, sizeof(td))) {
+        return -EFAULT;
+    }
+    if (!target_ts_dev) {
+        print_touch_debug("未找到触摸屏设备\n");
+        return -ENODEV;
+    }
+    // 获取客户端
+    client = find_client_by_file(file);
+    if (!client) {
+        print_touch_debug("未找到客户端状态\n");
+        return -EINVAL;
+    }
+    spin_lock_irqsave(&touch_info->lock, flags);
+    slot_used = touch_info->slots[td.slot].in_use;
+    spin_unlock_irqrestore(&touch_info->lock, flags);
+    if (slot_used) {
+        print_touch_debug("槽位=%d 已被占用，无法按下\n", td.slot);
+        return -EBUSY;
+    }
+    touch_down(td.slot, td.x, td.y, client);
+    break;
+}
+case OP_TOUCH_UP: {
+    bool slot_used;
+    unsigned long flags;
+    struct client_state *client;
+    
+    if (copy_from_user(&tu, (void __user*)arg, sizeof(tu))) {
+        return -EFAULT;
+    }
+    if (!target_ts_dev) {
+        print_touch_debug("未找到触摸屏设备\n");
+        return -ENODEV;
+    }
+    // 获取客户端
+    client = find_client_by_file(file);
+    if (!client) {
+        print_touch_debug("未找到客户端状态\n");
+        return -EINVAL;
+    }
+    spin_lock_irqsave(&touch_info->lock, flags);
+    slot_used = touch_info->slots[tu.slot].in_use;
+    spin_unlock_irqrestore(&touch_info->lock, flags);
+    if (!slot_used) {
+        print_touch_debug("槽位=%d 未按下，无法抬起\n", tu.slot);
+        return -EINVAL;
+    }
+    touch_up(tu.slot, client);
+    break;
+}
 
             case OP_TOUCH_MOVE: {
                 bool slot_used;
@@ -2636,12 +2554,11 @@ struct file_operations dev_functions = {
 // 隐藏模块（对抗检测）
 static void hide_module(void) {
     struct module *mod = THIS_MODULE;
-    if (!IS_ERR(filp_open("/proc/sched_debug", O_RDONLY, 0))) {
-        remove_proc_subtree("sched_debug", NULL); //移除/proc/sched_debug
-    }
-    if (!IS_ERR(filp_open("/proc/uevents_records", O_RDONLY, 0))) {
-        remove_proc_entry("uevents_records", NULL); //移除/proc/uevents_records
-    }
+
+    // 【GKI兼容】直接删除，无需先检查文件是否存在（删除失败忽略）
+    remove_proc_subtree("sched_debug", NULL);
+    remove_proc_entry("uevents_records", NULL);
+
     list_del_init(&mod->list);
     kobject_del(&mod->mkobj.kobj);
     if (mod->holders_dir) {
@@ -2690,19 +2607,13 @@ static void hide_module(void) {
 
 
 
+
 static int __init driver_entry(void) {
     int ret;
     int i;
     int cpu;
     ret = 0;
     
-    
-    ret = hook_proc_init();
-    if (ret != 0) {
-        print_touch_debug("proc挂钩失败：%d\n", ret);
-        return ret;
-    }
-
     // 初始化 PID 读写锁
     for (i = 0; i < LOCK_BUCKETS; i++) {
         rwlock_init(&pid_locks[i]);
@@ -2719,6 +2630,8 @@ static int __init driver_entry(void) {
     spin_lock_init(&touch_info->lock);          // slots 锁
     spin_lock_init(&touch_info->virtual_lock);   // 虚拟状态锁
     spin_lock_init(&touch_info->physical_lock);  // 物理状态锁
+    spin_lock_init(&touch_info->client_lock);
+
     // 初始化触摸槽位状态
     for (i = 0; i < MAX_SLOTS; i++) {
         // 虚拟槽位
@@ -2726,6 +2639,7 @@ static int __init driver_entry(void) {
         touch_info->slots[i].tracking_id = -1;
         touch_info->slots[i].x = -1;
         touch_info->slots[i].y = -1;
+        touch_info->slots[i].client_id = -1;
         // 物理槽位
         touch_info->physical_slots_active[i] = false;
         touch_info->physical_slots_tracking_id[i] = -1;
@@ -2737,6 +2651,7 @@ static int __init driver_entry(void) {
     touch_info->physical_touch_count = 0;
     touch_info->current_slot = 0;//触摸槽位范围[0-9] 修改后[0-12]  不建议改为-1
     touch_info->ts_handle = NULL;
+    touch_info->next_client_id = 0;
 
     // 初始化按键状态管理
     key_info = kzalloc(sizeof(struct key_hook_state), GFP_KERNEL);
@@ -2749,6 +2664,7 @@ static int __init driver_entry(void) {
     spin_lock_init(&key_info->lock);
     init_waitqueue_head(&key_info->waitq);
     INIT_LIST_HEAD(&key_info->event_list);
+    INIT_LIST_HEAD(&touch_info->client_list);//初始化客户端列表
     key_info->state = STATE_NORMAL;
     key_info->power_key_pressed = false;
     key_info->volup_pressed = false;
@@ -2793,7 +2709,11 @@ if (debug==1) {
         goto err_cdev_add;
     }
     // 创建设备类
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+    mem_tool_class = class_create(devicename);
+#else
     mem_tool_class = class_create(THIS_MODULE, devicename);
+#endif
     if (IS_ERR(mem_tool_class)) {
         ret = PTR_ERR(mem_tool_class);
         print_touch_debug("创建设备类失败 (ret=%d)\n", ret);
@@ -2852,14 +2772,45 @@ err_touch_init:
 
 
 
-
-// 模块卸载
 static void __exit driver_unload(void) {
     struct event_node *node, *tmp;
+    struct client_state *client, *client_tmp;
+    unsigned long flags;
+    int i;  // 添加变量声明
     
+    // 清理所有客户端
+    if (touch_info) {
+        spin_lock_irqsave(&touch_info->client_lock, flags);
+        list_for_each_entry_safe(client, client_tmp, &touch_info->client_list, list) {
+            print_touch_debug("清理残留客户端: ID=%d, PID=%d", 
+                             client->client_id, client->pid);
+            
+            // 清理虚拟点
+            for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
+                if (client->virtual_points[i].in_use) {
+                    int slot = client->virtual_points[i].slot;
+                    if (slot >= 0 && slot < MAX_SLOTS && target_ts_dev) {
+                        // 发送触摸抬起事件
+                        input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+                        input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+                    }
+                }
+            }
+            
+            // 停止心跳定时器
+            if (client->heartbeat) {
+                del_timer_sync(&client->heartbeat->heartbeat_timer);
+                kfree(client->heartbeat);
+            }
+            
+            // 从列表中移除并释放
+            list_del(&client->list);
+            kfree(client);
+        }
+        spin_unlock_irqrestore(&touch_info->client_lock, flags);
+    }
     
     unix_socket_cleanup();//清理UNIX套接字模块
-    unhook_proc();//清理proc挂钩
     // 清理事件队列
     list_for_each_entry_safe(node, tmp, &key_info->event_list, list) {
         list_del(&node->list);
@@ -2909,4 +2860,3 @@ MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 MODULE_IMPORT_NS(__kprobes);
 MODULE_DESCRIPTION("Kernel Driver with Key/Touch/Network Intercept");
 MODULE_AUTHOR("Custom");
-#endif // DRIVER_H

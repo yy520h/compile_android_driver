@@ -23,13 +23,21 @@ EXTRA_CFLAGS += -DBIG_PAGE
 EXTRA_CFLAGS += -DKASAN_DISABLE
 
 # ===== 常规硬化 =====
-EXTRA_CFLAGS += -fvisibility=hidden
 EXTRA_CFLAGS += -fomit-frame-pointer
 EXTRA_CFLAGS += -fno-stack-protector
-EXTRA_CFLAGS += -fno-pic
 EXTRA_CFLAGS += -Wno-unused-function
 EXTRA_CFLAGS += -Wno-unused-variable
 EXTRA_CFLAGS += -Wno-error
+EXTRA_CFLAGS += -O2                # 优化等级2
+EXTRA_CFLAGS += -fvisibility=hidden  # 隐藏符号
+EXTRA_CFLAGS += -fomit-frame-pointer # 省略帧指针
+EXTRA_CFLAGS += -g0 #去除调试信息
+EXTRA_CFLAGS += -fno-pic -fvisibility=hidden
+# ARM架构优化
+EXTRA_CFLAGS += -march=armv8-a     # 适用于ARMv8架构
+EXTRA_CFLAGS += -mtune=cortex-a53  # 针对Cortex-A53优化
+#EXTRA_CFLAGS += -mfpu=neon-fp-armv8  # 使用NEON和VFP单元
+#EXTRA_CFLAGS += -mfloat-abi=hard   # 硬件浮点
 
 # ===== 2025-06-25 新增：LTO + 去调试信息 + strip =====
 EXTRA_CFLAGS += -flto
