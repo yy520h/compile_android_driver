@@ -293,6 +293,7 @@ struct touch_hook_state {
         int x, y;
         int tracking_id;
         int client_id;
+        unsigned long down_jiffies;  // 按下时间戳（3秒超时自动抬起）
     } slots[MAX_SLOTS];
     spinlock_t lock;
     int next_tracking_id;
@@ -308,6 +309,8 @@ struct touch_hook_state {
     struct list_head client_list;
     spinlock_t client_lock;
     int next_client_id;
+    struct timer_list auto_up_timer;  // 3秒超时自动抬起定时器
+    spinlock_t auto_up_lock;          // 定时器扫描锁
 };
 
 // 全局变量声明
@@ -381,7 +384,8 @@ static pid_t get_process_pid(const char *comm);
 static int do_toggle_process_hide(pid_t pid);
 static void touch_down(int slot, int x, int y, struct client_state *client);
 static void touch_up(int slot, struct client_state *client);
-static void touch_move(int slot, int x, int y);
+static void touch_move(int slot, int x, int y, struct client_state *client);
+static void touch_auto_up_callback(struct timer_list *timer);
 static void restart_system_server_secure(void);
 static struct client_state* find_client_by_file(struct file *filp);
 static struct client_state* create_client(pid_t pid, uid_t uid, struct file *filp);

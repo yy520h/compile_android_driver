@@ -423,6 +423,7 @@ static void touch_down(int slot, int x, int y, struct client_state *client) {
     touch_info->slots[slot].y = y;
     touch_info->slots[slot].tracking_id = tracking_id;
     touch_info->slots[slot].client_id = client ? client->client_id : -1;
+    touch_info->slots[slot].down_jiffies = jiffies + msecs_to_jiffies(3000);  // 3秒超时自动抬起
 
     old_virtual_count = touch_info->virtual_touch_count;
     touch_info->virtual_touch_count++;
@@ -464,6 +465,11 @@ static void touch_down(int slot, int x, int y, struct client_state *client) {
     input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
     print_touch_debug("虚拟触摸按下：客户端=%d, 槽位=%d, ID=%d, 坐标=(%d,%d), 虚拟点数=%d", 
         client ? client->client_id : -1, slot, tracking_id, x, y, touch_info->virtual_touch_count);
+
+    // 确保自动抬起定时器在运行（按下时激活检查）
+    if (!timer_pending(&touch_info->auto_up_timer)) {
+        mod_timer(&touch_info->auto_up_timer, jiffies + msecs_to_jiffies(500));
+    }
 }
 
 static void touch_up(int slot, struct client_state *client) {
@@ -543,6 +549,7 @@ static void touch_up(int slot, struct client_state *client) {
     touch_info->slots[slot].x = -1;
     touch_info->slots[slot].y = -1;
     touch_info->slots[slot].client_id = -1;
+    touch_info->slots[slot].down_jiffies = 0;  // 清除超时计时
 
     UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
 
@@ -558,20 +565,108 @@ static void touch_up(int slot, struct client_state *client) {
     print_touch_debug("虚拟触摸抬起：客户端=%d, 槽位=%d, ID=%d, 剩余虚拟点数=%d", 
         client ? client->client_id : -1, slot, tracking_id, touch_info->virtual_touch_count);
 }
-static void touch_move(int slot, int x, int y) {
+
+// 3秒超时自动抬起定时器回调
+// 采用两轮扫描：先持锁收集超时槽位，再逐个在锁外处理
+static void touch_auto_up_callback(struct timer_list *timer) {
+    int slot;
+    int idx;
+    int expired_count;
+    int expired_slots[MAX_SLOTS];
+    int expired_clients[MAX_SLOTS];
+    unsigned long flags;
+    unsigned long now;
+
+    /* 所有变量在函数开头声明（GNU89/C89 兼容） */
+
+    if (!touch_info || !target_ts_dev)
+        return;
+
+    now = jiffies;
+    expired_count = 0;
+
+    /* 第一轮：持轻量锁收集超时的槽位信息 */
+    spin_lock_irqsave(&touch_info->auto_up_lock, flags);
+    for (slot = 0; slot < MAX_SLOTS; slot++) {
+        if (touch_info->slots[slot].in_use &&
+            touch_info->slots[slot].down_jiffies != 0 &&
+            time_after(now, touch_info->slots[slot].down_jiffies)) {
+            /* 在锁内读取 client_id，避免解锁后访问 */
+            expired_slots[expired_count] = slot;
+            expired_clients[expired_count] =
+                touch_info->slots[slot].client_id;
+            expired_count++;
+        }
+    }
+    spin_unlock_irqrestore(&touch_info->auto_up_lock, flags);
+
+    /* 第二轮：逐个处理超时槽位（锁外，调用 touch_up 发送事件） */
+    for (idx = 0; idx < expired_count; idx++) {
+        struct client_state *cs = NULL;
+        int cid = expired_clients[idx];
+        int sl = expired_slots[idx];
+
+        /* 根据 client_id 查找对应 client */
+        if (cid >= 0) {
+            unsigned long cflags;
+            struct client_state *c;
+            spin_lock_irqsave(&touch_info->client_lock, cflags);
+            list_for_each_entry(c, &touch_info->client_list, list) {
+                if (c->client_id == cid) {
+                    cs = c;
+                    break;
+                }
+            }
+            spin_unlock_irqrestore(&touch_info->client_lock, cflags);
+        }
+
+        /* 复用已有的 touch_up，它会内部做二次验证 */
+        touch_up(sl, cs);
+    }
+
+    /* 如果还有活跃槽位，重新设置定时器 */
+    if (expired_count > 0 || touch_info->virtual_touch_active)
+        mod_timer(&touch_info->auto_up_timer,
+                  jiffies + msecs_to_jiffies(500));
+}
+
+static void touch_move(int slot, int x, int y, struct client_state *client) {
     unsigned long flags_physical, flags_virtual, flags_slots;
+    unsigned long now;
+    bool slot_in_use;
+    int slot_client_id;
+    int tracking_id;
 
     if (slot < 0 || slot >= MAX_SLOTS) {
-        print_touch_debug("触摸移动失败：无效槽位=%d", slot);
+        return;  // 静默返回，不打印日志（避免暴力调用刷屏）
+    }
+
+    // 先快速检查槽位状态，避免不必要的锁竞争
+    LOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
+
+    slot_in_use = touch_info->slots[slot].in_use;
+    slot_client_id = touch_info->slots[slot].client_id;
+    tracking_id = touch_info->slots[slot].tracking_id;
+
+    // 槽位未按下时静默返回（兼容UP后MOVE的竞态场景）
+    if (!slot_in_use) {
+        UNLOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
         return;
     }
 
-    LOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
-
-    if (!touch_info->slots[slot].in_use) {
+    // client验证：只有槽位拥有者或NULL（兼容旧行为）才能MOVE
+    if (client && slot_client_id != client->client_id) {
         UNLOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
-        print_touch_debug("触摸移动失败：槽位=%d 未按下", slot);
+        print_touch_debug("触摸移动失败：槽位=%d 不属于客户端=%d", slot, client->client_id);
         return;
+    }
+
+    // 检查3秒超时——如果即将超时（剩余<200ms），拒绝MOVE避免半截操作
+    now = jiffies;
+    if (touch_info->slots[slot].down_jiffies != 0 && 
+        time_after(now + msecs_to_jiffies(200), touch_info->slots[slot].down_jiffies)) {
+        UNLOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
+        return;  // 即将超时，拒绝MOVE让定时器处理自动抬起
     }
 
     touch_info->slots[slot].x = x;
@@ -580,7 +675,7 @@ static void touch_move(int slot, int x, int y) {
     UNLOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
 
     input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
-    input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, touch_info->slots[slot].tracking_id);
+    input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, tracking_id);
     input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_X, x);
     input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_Y, y);
     input_event(target_ts_dev, EV_ABS, ABS_MT_PRESSURE, 1);
@@ -2279,20 +2374,30 @@ case OP_TOUCH_UP: {
         case OP_TOUCH_MOVE: {
             bool slot_used;
             unsigned long flags;
+            struct client_state *move_client;
+            
             if (copy_from_user(&tm, (void __user*)arg, sizeof(tm)))
                 return -EFAULT;
             if (!target_ts_dev) {
                 print_touch_debug("未找到触摸屏设备\n");
                 return -ENODEV;
             }
+            
+            move_client = find_client_by_file(filp);
+            if (!move_client) {
+                print_touch_debug("未找到客户端状态\n");
+                return -EINVAL;
+            }
+            
             spin_lock_irqsave(&touch_info->lock, flags);
             slot_used = touch_info->slots[tm.slot].in_use;
             spin_unlock_irqrestore(&touch_info->lock, flags);
             if (!slot_used) {
-                print_touch_debug("槽位=%d 未按下，无法移动\n", tm.slot);
-                return -EINVAL;
+                // 槽位未按下时静默返回（兼容UP后MOVE的竞态场景）
+                return 0;
             }
-            touch_move(tm.slot, tm.x, tm.y);
+            
+            touch_move(tm.slot, tm.x, tm.y, move_client);
             break;
         }
 
@@ -2482,20 +2587,30 @@ case OP_TOUCH_UP: {
             case OP_TOUCH_MOVE: {
                 bool slot_used;
                 unsigned long flags;
+                struct client_state *move_client;
+                
                 if (copy_from_user(&tm, (void __user*)arg, sizeof(tm)))
                     return -EFAULT;
                 if (!target_ts_dev) {
                     print_touch_debug("未找到触摸屏设备\n");
                     return -ENODEV;
                 }
+                
+                move_client = find_client_by_file(file);
+                if (!move_client) {
+                    print_touch_debug("未找到客户端状态\n");
+                    return -EINVAL;
+                }
+                
                 spin_lock_irqsave(&touch_info->lock, flags);
                 slot_used = touch_info->slots[tm.slot].in_use;
                 spin_unlock_irqrestore(&touch_info->lock, flags);
                 if (!slot_used) {
-                    print_touch_debug("槽位=%d 未按下，无法移动\n", tm.slot);
-                    return -EINVAL;
+                    // 槽位未按下时静默返回（兼容UP后MOVE的竞态场景）
+                    return 0;
                 }
-                touch_move(tm.slot, tm.x, tm.y);
+                
+                touch_move(tm.slot, tm.x, tm.y, move_client);
                 break;
             }
             
@@ -2631,6 +2746,7 @@ static int __init driver_entry(void) {
     spin_lock_init(&touch_info->virtual_lock);   // 虚拟状态锁
     spin_lock_init(&touch_info->physical_lock);  // 物理状态锁
     spin_lock_init(&touch_info->client_lock);
+    spin_lock_init(&touch_info->auto_up_lock);   // 自动抬起锁
 
     // 初始化触摸槽位状态
     for (i = 0; i < MAX_SLOTS; i++) {
@@ -2739,6 +2855,13 @@ if (debug==0) {
     }
 }
 
+    // 初始化3秒超时自动抬起定时器
+    spin_lock_init(&touch_info->auto_up_lock);
+    timer_setup(&touch_info->auto_up_timer, touch_auto_up_callback, 0);
+    // 启动第一次检查（1秒后）
+    mod_timer(&touch_info->auto_up_timer, jiffies + msecs_to_jiffies(1000));
+    print_touch_debug("3秒超时自动抬起定时器已初始化并启动");
+
     msleep(300);
     /* 让触摸上层框架重新读取 slot maximum */
 	restart_system_server_secure();//重启system_server
@@ -2778,6 +2901,12 @@ static void __exit driver_unload(void) {
     unsigned long flags;
     int i;  // 添加变量声明
     
+    // 删除自动抬起定时器
+    if (touch_info) {
+        del_timer_sync(&touch_info->auto_up_timer);
+        print_touch_debug("3秒超时自动抬起定时器已清理");
+    }
+
     // 清理所有客户端
     if (touch_info) {
         spin_lock_irqsave(&touch_info->client_lock, flags);
