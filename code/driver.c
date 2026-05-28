@@ -450,120 +450,130 @@ static void touch_down(int slot, int x, int y, struct client_state *client) {
 
     UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
 
+    /* 
+     * 完整的多点触控 Type B DOWN 事件序列。
+     * ABS_MT_TOOL_TYPE 对某些 Android 版本至关重要：如果不发送，
+     * InputReader 可能无法正确跟踪触摸点生命周期，导致"幽灵触摸"
+     *（按下后无法抬起）。MT_FINGER = 0 是默认值，显式设置确保兼容。
+     */
     input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
     input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, tracking_id);
     input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_X, x);
     input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_Y, y);
     input_event(target_ts_dev, EV_ABS, ABS_MT_PRESSURE, 1);
     input_event(target_ts_dev, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
+    input_event(target_ts_dev, EV_ABS, ABS_MT_TOOL_TYPE, MT_FINGER);
 
     if (need_btn_touch) {
         input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 1);
-        print_touch_debug("发送虚拟BTN_TOUCH=1（首个虚拟点）");
+        print_touch_debug("发送BTN_TOUCH=1");
     }
 
     input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
-    print_touch_debug("虚拟触摸按下：客户端=%d, 槽位=%d, ID=%d, 坐标=(%d,%d), 虚拟点数=%d", 
-        client ? client->client_id : -1, slot, tracking_id, x, y, touch_info->virtual_touch_count);
+    print_touch_debug("虚拟触摸按下：客户端=%d, 槽位=%d, ID=%d, 坐标=(%d,%d), 虚拟点数=%d",
+        client ? client->client_id : -1, slot, tracking_id, x, y,
+        touch_info->virtual_touch_count);
 
-    // 确保自动抬起定时器在运行（按下时激活检查）
-    if (!timer_pending(&touch_info->auto_up_timer)) {
+    /* 确保自动抬起定时器在运行 */
+    if (!timer_pending(&touch_info->auto_up_timer))
         mod_timer(&touch_info->auto_up_timer, jiffies + msecs_to_jiffies(500));
-    }
 }
 
+/*
+ * touch_up - 触摸抬起（幂等设计）
+ * 
+ * 核心原则：UP 事件必须总是发送到内核，不因任何内部状态检查而跳过。
+ * 状态更新只在确认槽位确实属于当前 client 时才执行，但事件发送无条件进行。
+ * 
+ * 这是解决"偶发不抬起"的关键：touch_up 绝不能因为竞态条件（如定时器已提前
+ * 释放、心跳超时等）而跳过 input_event 发送。
+ */
 static void touch_up(int slot, struct client_state *client) {
     unsigned long flags_physical, flags_virtual, flags_slots, flags_client;
-    int tracking_id;
+    int tracking_id = -1;
     bool need_btn_touch_reset = false;
-    int client_slot = -1;
+    bool was_in_use = false;
+    bool owned_by_client = false;
     int i;
-    
-    // 检查客户端是否有效
-    if (!client) {
-        print_touch_debug("触摸抬起失败：客户端无效");
-        return;
-    }
-    
-    // 检查客户端是否已退出
-    if (client->exited) {
-        print_touch_debug("触摸抬起失败：客户端 %d 已退出", client->client_id);
-        return;
-    }
-    
-    // 检查心跳是否正常
-    if (client->heartbeat && !client->heartbeat->alive) {
-        print_touch_debug("触摸抬起失败：客户端 %d 心跳异常", client->client_id);
-        return;
-    }
-    
-    if (slot < 0 || slot >= MAX_SLOTS) {
-        print_touch_debug("触摸抬起失败：无效槽位=%d", slot);
-        return;
-    }
 
+    /* 槽位范围检查：越界时直接返回，不发送事件 */
+    if (slot < 0 || slot >= MAX_SLOTS || !target_ts_dev)
+        return;
+
+    /* 
+     * 加锁检查状态。不管状态如何，最后都要发送 UP 事件。
+     * 只有确认槽位确实属于当前 client 才更新计数器，避免
+     * 误减其他 client 的虚拟点计数。
+     */
     LOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
 
-    if (!touch_info->slots[slot].in_use) {
-        UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
-        print_touch_debug("触摸抬起失败：槽位=%d 未按下", slot);
-        return;
-    }
-
-    if (client && touch_info->slots[slot].client_id != client->client_id) {
-        UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
-        print_touch_debug("触摸抬起失败：槽位=%d 不属于客户端=%d", slot, client->client_id);
-        return;
-    }
-
+    was_in_use = touch_info->slots[slot].in_use;
     tracking_id = touch_info->slots[slot].tracking_id;
 
-    touch_info->virtual_touch_count--;
-    if (touch_info->virtual_touch_count <= 0) {
-        touch_info->virtual_touch_count = 0;
-        touch_info->virtual_touch_active = false;
-    }
+    if (was_in_use) {
+        /* 检查槽位所有权：client 为 NULL 时表示强制抬起（定时器路径） */
+        if (!client || touch_info->slots[slot].client_id == client->client_id) {
+            owned_by_client = true;
 
-    if (touch_info->virtual_touch_count == 0 && touch_info->physical_touch_count == 0) {
-        need_btn_touch_reset = true;
-    }
-
-    if (client) {
-        for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
-            if (client->virtual_points[i].in_use && 
-                client->virtual_points[i].slot == slot &&
-                client->virtual_points[i].tracking_id == tracking_id) {
-                client->virtual_points[i].in_use = false;
-                client->virtual_points[i].slot = -1;
-                client->virtual_points[i].tracking_id = -1;
-                client->virtual_point_count--;
-                if (client->virtual_point_count < 0) client->virtual_point_count = 0;
-                client_slot = i;
-                break;
+            touch_info->virtual_touch_count--;
+            if (touch_info->virtual_touch_count <= 0) {
+                touch_info->virtual_touch_count = 0;
+                touch_info->virtual_touch_active = false;
             }
+
+            if (touch_info->virtual_touch_count == 0 &&
+                touch_info->physical_touch_count == 0) {
+                need_btn_touch_reset = true;
+            }
+
+            /* 清除客户端记录 */
+            if (client) {
+                for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
+                    if (client->virtual_points[i].in_use &&
+                        client->virtual_points[i].slot == slot) {
+                        client->virtual_points[i].in_use = false;
+                        client->virtual_points[i].slot = -1;
+                        client->virtual_points[i].tracking_id = -1;
+                        client->virtual_point_count--;
+                        if (client->virtual_point_count < 0)
+                            client->virtual_point_count = 0;
+                        break;
+                    }
+                }
+            }
+
+            /* 重置槽位状态 */
+            touch_info->slots[slot].in_use = false;
+            touch_info->slots[slot].tracking_id = -1;
+            touch_info->slots[slot].x = -1;
+            touch_info->slots[slot].y = -1;
+            touch_info->slots[slot].client_id = -1;
+            touch_info->slots[slot].down_jiffies = 0;
         }
     }
 
-    touch_info->slots[slot].in_use = false;
-    touch_info->slots[slot].tracking_id = -1;
-    touch_info->slots[slot].x = -1;
-    touch_info->slots[slot].y = -1;
-    touch_info->slots[slot].client_id = -1;
-    touch_info->slots[slot].down_jiffies = 0;  // 清除超时计时
-
     UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
 
+    /* 
+     * 无条件发送 UP 事件。即使 was_in_use=false（竞态已释放）或
+     * owned_by_client=false（其他 client 的槽位），也要发送
+     * ABS_MT_TRACKING_ID=-1 确保内核/InputReader 状态一致。
+     */
     input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
     input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
 
     if (need_btn_touch_reset) {
         input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
-        print_touch_debug("发送虚拟BTN_TOUCH=0（最后虚拟点抬起）");
+        print_touch_debug("发送BTN_TOUCH=0");
     }
 
     input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
-    print_touch_debug("虚拟触摸抬起：客户端=%d, 槽位=%d, ID=%d, 剩余虚拟点数=%d", 
-        client ? client->client_id : -1, slot, tracking_id, touch_info->virtual_touch_count);
+
+    if (was_in_use && owned_by_client) {
+        print_touch_debug("虚拟触摸抬起：客户端=%d, 槽位=%d, ID=%d, 剩余=%d",
+            client ? client->client_id : -1, slot, tracking_id,
+            touch_info->virtual_touch_count);
+    }
 }
 
 // 3秒超时自动抬起定时器回调
@@ -630,43 +640,46 @@ static void touch_auto_up_callback(struct timer_list *timer) {
                   jiffies + msecs_to_jiffies(500));
 }
 
+/*
+ * touch_move - 触摸移动
+ *
+ * Type B 协议规范：tracking_id 只在 DOWN 时发送一次，MOVE 阶段只需
+ * 发送 ABS_MT_SLOT + 坐标 + PRESSURE。重复发送 tracking_id 可能导致
+ * 某些 InputReader 将 MOVE 误判为新的 DOWN 事件。
+ */
 static void touch_move(int slot, int x, int y, struct client_state *client) {
     unsigned long flags_physical, flags_virtual, flags_slots;
     unsigned long now;
     bool slot_in_use;
     int slot_client_id;
-    int tracking_id;
 
-    if (slot < 0 || slot >= MAX_SLOTS) {
-        return;  // 静默返回，不打印日志（避免暴力调用刷屏）
-    }
+    if (slot < 0 || slot >= MAX_SLOTS || !target_ts_dev)
+        return;  /* 静默返回 */
 
-    // 先快速检查槽位状态，避免不必要的锁竞争
     LOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
 
     slot_in_use = touch_info->slots[slot].in_use;
     slot_client_id = touch_info->slots[slot].client_id;
-    tracking_id = touch_info->slots[slot].tracking_id;
 
-    // 槽位未按下时静默返回（兼容UP后MOVE的竞态场景）
+    /* 槽位未按下时静默返回（兼容UP后MOVE的竞态场景） */
     if (!slot_in_use) {
         UNLOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
         return;
     }
 
-    // client验证：只有槽位拥有者或NULL（兼容旧行为）才能MOVE
+    /* client验证 */
     if (client && slot_client_id != client->client_id) {
         UNLOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
-        print_touch_debug("触摸移动失败：槽位=%d 不属于客户端=%d", slot, client->client_id);
         return;
     }
 
-    // 检查3秒超时——如果即将超时（剩余<200ms），拒绝MOVE避免半截操作
+    /* 即将超时（剩余<200ms）时拒绝MOVE，让定时器统一处理抬起 */
     now = jiffies;
-    if (touch_info->slots[slot].down_jiffies != 0 && 
-        time_after(now + msecs_to_jiffies(200), touch_info->slots[slot].down_jiffies)) {
+    if (touch_info->slots[slot].down_jiffies != 0 &&
+        time_after(now + msecs_to_jiffies(200),
+                   touch_info->slots[slot].down_jiffies)) {
         UNLOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
-        return;  // 即将超时，拒绝MOVE让定时器处理自动抬起
+        return;
     }
 
     touch_info->slots[slot].x = x;
@@ -674,8 +687,8 @@ static void touch_move(int slot, int x, int y, struct client_state *client) {
 
     UNLOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
 
+    /* 标准 Type B MOVE 事件序列（不含 tracking_id） */
     input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
-    input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, tracking_id);
     input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_X, x);
     input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_Y, y);
     input_event(target_ts_dev, EV_ABS, ABS_MT_PRESSURE, 1);
