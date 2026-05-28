@@ -462,7 +462,7 @@ static void touch_down(int slot, int x, int y, struct client_state *client) {
     input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_Y, y);
     input_event(target_ts_dev, EV_ABS, ABS_MT_PRESSURE, 1);
     input_event(target_ts_dev, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
-    input_event(target_ts_dev, EV_ABS, ABS_MT_TOOL_TYPE, MT_FINGER);
+    input_event(target_ts_dev, EV_ABS, ABS_MT_TOOL_TYPE, 0); /* 0 = MT_FINGER */
 
     if (need_btn_touch) {
         input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 1);
