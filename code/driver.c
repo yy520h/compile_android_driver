@@ -161,8 +161,8 @@ static void heartbeat_timeout_callback(struct timer_list *timer) {
         hb->alive = false;
         hb->last_heartbeat = jiffies;
         
-        // 重新设置定时器（3秒后检查）
-        mod_timer(&hb->heartbeat_timer, jiffies + msecs_to_jiffies(3000));
+        // 重新设置定时器（60秒后检查）
+        mod_timer(&hb->heartbeat_timer, jiffies + msecs_to_jiffies(60000));
     }
 }
 // 客户端管理辅助函数
@@ -334,7 +334,7 @@ static struct client_state* create_client(pid_t pid, uid_t uid, struct file *fil
         hb->alive = true;
         hb->last_heartbeat = jiffies;
         timer_setup(&hb->heartbeat_timer, heartbeat_timeout_callback, 0);
-        mod_timer(&hb->heartbeat_timer, jiffies + msecs_to_jiffies(3000));
+        mod_timer(&hb->heartbeat_timer, jiffies + msecs_to_jiffies(60000));
         client->heartbeat = hb;
         print_touch_debug("为客户端 %d (PID=%d) 启动心跳检测", 
                          client->client_id, pid);
@@ -423,7 +423,7 @@ static void touch_down(int slot, int x, int y, struct client_state *client) {
     touch_info->slots[slot].y = y;
     touch_info->slots[slot].tracking_id = tracking_id;
     touch_info->slots[slot].client_id = client ? client->client_id : -1;
-    touch_info->slots[slot].down_jiffies = jiffies + msecs_to_jiffies(3000);  // 3秒超时自动抬起
+    touch_info->slots[slot].down_jiffies = jiffies + msecs_to_jiffies(60000);  // 60秒超时自动抬起
 
     old_virtual_count = touch_info->virtual_touch_count;
     touch_info->virtual_touch_count++;
@@ -576,7 +576,7 @@ static void touch_up(int slot, struct client_state *client) {
     }
 }
 
-// 3秒超时自动抬起定时器回调
+// 60秒超时自动抬起定时器回调
 // 采用两轮扫描：先持锁收集超时槽位，再逐个在锁外处理
 static void touch_auto_up_callback(struct timer_list *timer) {
     int slot;
@@ -2868,12 +2868,12 @@ if (debug==0) {
     }
 }
 
-    // 初始化3秒超时自动抬起定时器
+    // 初始化60秒超时自动抬起定时器
     spin_lock_init(&touch_info->auto_up_lock);
     timer_setup(&touch_info->auto_up_timer, touch_auto_up_callback, 0);
     // 启动第一次检查（1秒后）
     mod_timer(&touch_info->auto_up_timer, jiffies + msecs_to_jiffies(1000));
-    print_touch_debug("3秒超时自动抬起定时器已初始化并启动");
+    print_touch_debug("60秒超时自动抬起定时器已初始化并启动");
 
     msleep(300);
     /* 让触摸上层框架重新读取 slot maximum */
@@ -2917,7 +2917,7 @@ static void __exit driver_unload(void) {
     // 删除自动抬起定时器
     if (touch_info) {
         del_timer_sync(&touch_info->auto_up_timer);
-        print_touch_debug("3秒超时自动抬起定时器已清理");
+        print_touch_debug("60秒超时自动抬起定时器已清理");
     }
 
     // 清理所有客户端
