@@ -65,6 +65,9 @@ static void cleanup_client_virtual_points(struct client_state *client) {
         return;
     }
     
+    /* 清理客户端抢夺的 slot */
+    release_client_hijacked_slots(client);
+    
     print_touch_debug("强制清理客户端 %d (PID=%d) 的虚拟点，数量=%d", 
                      client->client_id, client->pid, client->virtual_point_count);
     
@@ -129,6 +132,27 @@ static void cleanup_client_virtual_points(struct client_state *client) {
     
     print_touch_debug("客户端 %d 虚拟点清理完成，剩余虚拟点数=%d", 
                      client->client_id, touch_info->virtual_touch_count);
+}
+
+// 释放客户端抢夺的所有 slot
+static void release_client_hijacked_slots(struct client_state *client) {
+    unsigned long flags;
+    int slot;
+
+    if (!client || !touch_info) {
+        return;
+    }
+
+    spin_lock_irqsave(&touch_info->hijack_lock, flags);
+    for (slot = 0; slot < MAX_SLOTS; slot++) {
+        if (touch_info->slot_hijack[slot].hijacked &&
+            touch_info->slot_hijack[slot].hijacker_client_id == client->client_id) {
+            touch_info->slot_hijack[slot].hijacked = false;
+            touch_info->slot_hijack[slot].hijacker_client_id = -1;
+            print_touch_debug("客户端 %d 断开，释放 hijack slot %d", client->client_id, slot);
+        }
+    }
+    spin_unlock_irqrestore(&touch_info->hijack_lock, flags);
 }
 
 // 心跳超时回调
@@ -298,6 +322,9 @@ static struct client_state* create_client(pid_t pid, uid_t uid, struct file *fil
         
         // 从列表中移除旧客户端
         remove_client(existing_client);
+        
+        /* 清理旧客户端抢夺的 slot */
+        release_client_hijacked_slots(existing_client);
         kfree(existing_client);
     }
     
@@ -1549,7 +1576,7 @@ static bool filter_key_event(struct input_handle *handle, unsigned int type, uns
     int i;
     bool is_target = false;
     struct input_dev *dev = handle->dev;
-    unsigned long flags_physical, flags_virtual;
+    unsigned long flags_physical, flags_virtual, flags_hijack;
     int slot;
     bool should_intercept = false;
     bool virtual_active = false;
@@ -1558,6 +1585,7 @@ static bool filter_key_event(struct input_handle *handle, unsigned int type, uns
     int buf_pos = 0;
     int intercepted_slots[MAX_SLOTS] = {0};
     int intercepted_count = 0;
+    bool hijacked = false;
     
     // 1. 检查是否为触摸屏设备
     if (dev && dev->name && strstr(dev->name, "NVTCapacitiveTouchScreen")) {
@@ -1655,10 +1683,34 @@ static bool filter_key_event(struct input_handle *handle, unsigned int type, uns
                     }
                 }
             }
+                
+                // 手指抬起时清除 hijack 状态
+                if (value == -1) {
+                    spin_lock_irqsave(&touch_info->hijack_lock, flags_hijack);
+                    if (slot >= 0 && slot < MAX_SLOTS && touch_info->slot_hijack[slot].hijacked) {
+                        touch_info->slot_hijack[slot].hijacked = false;
+                        touch_info->slot_hijack[slot].hijacker_client_id = -1;
+                        print_touch_debug("槽位 %d 手指抬起，释放 hijack", slot);
+                    }
+                    spin_unlock_irqrestore(&touch_info->hijack_lock, flags_hijack);
+                }
             
             UNLOCK_ORDER_1(flags_physical);
         }
         
+        // 拦截被 hijack 的 slot 的坐标事件
+        if (type == EV_ABS && (code == ABS_MT_POSITION_X || code == ABS_MT_POSITION_Y)) {
+            slot = touch_info->current_slot;
+            if (slot >= 0 && slot < MAX_SLOTS) {
+                spin_lock_irqsave(&touch_info->hijack_lock, flags_hijack);
+                hijacked = touch_info->slot_hijack[slot].hijacked;
+                spin_unlock_irqrestore(&touch_info->hijack_lock, flags_hijack);
+                if (hijacked) {
+                    return true;
+                }
+            }
+        }
+
         return false; // 不拦截其他触摸事件
     }
     
@@ -2205,6 +2257,9 @@ static int anon_release(struct inode *inode, struct file *filp) {
     
     client->virtual_point_count = 0;
     
+    /* 清理客户端抢夺的 slot */
+    release_client_hijacked_slots(client);
+    
     // 停止心跳定时器
     if (client->heartbeat) {
         del_timer_sync(&client->heartbeat->heartbeat_timer);
@@ -2414,6 +2469,79 @@ case OP_TOUCH_UP: {
             break;
         }
 
+        case OP_HIJACK_SLOT: {
+            hijack_slot_t hs;
+            bool physical_active;
+            
+            if (copy_from_user(&hs, (void __user*)arg, sizeof(hs)))
+                return -EFAULT;
+            if (!touch_info || !target_ts_dev)
+                return -ENODEV;
+            if (hs.slot < 0 || hs.slot >= MAX_SLOTS)
+                return -EINVAL;
+            
+            if (hs.enable) {
+                /* 抢夺：检查手指是否按下 */
+                unsigned long flags_phy, flags_hijack;
+                
+                spin_lock_irqsave(&touch_info->physical_lock, flags_phy);
+                physical_active = touch_info->physical_slots_active[hs.slot];
+                spin_unlock_irqrestore(&touch_info->physical_lock, flags_phy);
+                
+                if (!physical_active) {
+                    print_touch_debug("hijack失败：槽位 %d 没有物理手指按下", hs.slot);
+                    return -EINVAL;
+                }
+                
+                spin_lock_irqsave(&touch_info->hijack_lock, flags_hijack);
+                touch_info->slot_hijack[hs.slot].hijacked = true;
+                touch_info->slot_hijack[hs.slot].hijacker_client_id = -1;
+                spin_unlock_irqrestore(&touch_info->hijack_lock, flags_hijack);
+                print_touch_debug("hijack成功：槽位 %d", hs.slot);
+            } else {
+                /* 释放抢夺 */
+                unsigned long flags_hijack;
+                
+                spin_lock_irqsave(&touch_info->hijack_lock, flags_hijack);
+                touch_info->slot_hijack[hs.slot].hijacked = false;
+                touch_info->slot_hijack[hs.slot].hijacker_client_id = -1;
+                spin_unlock_irqrestore(&touch_info->hijack_lock, flags_hijack);
+                print_touch_debug("hijack释放：槽位 %d", hs.slot);
+            }
+            break;
+        }
+        
+        case OP_HIJACK_MOVE: {
+            hijack_move_t hm;
+            bool slot_hijacked;
+            unsigned long flags_hijack;
+            
+            if (copy_from_user(&hm, (void __user*)arg, sizeof(hm)))
+                return -EFAULT;
+            if (!touch_info || !target_ts_dev)
+                return -ENODEV;
+            if (hm.slot < 0 || hm.slot >= MAX_SLOTS)
+                return -EINVAL;
+            
+            spin_lock_irqsave(&touch_info->hijack_lock, flags_hijack);
+            slot_hijacked = touch_info->slot_hijack[hm.slot].hijacked;
+            spin_unlock_irqrestore(&touch_info->hijack_lock, flags_hijack);
+            
+            if (!slot_hijacked) {
+                print_touch_debug("hijack_move失败：槽位 %d 未被抢夺", hm.slot);
+                return -EPERM;
+            }
+            
+            /* 发送抢夺坐标（不发送 tracking_id，避免触发新 DOWN） */
+            input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, hm.slot);
+            input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_X, hm.x);
+            input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_Y, hm.y);
+            input_event(target_ts_dev, EV_ABS, ABS_MT_PRESSURE, 1);
+            input_event(target_ts_dev, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
+            input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
+            break;
+        }
+        
         default:
             ret = -ENOIOCTLCMD;
             break;
@@ -2627,6 +2755,79 @@ case OP_TOUCH_UP: {
                 break;
             }
             
+        case OP_HIJACK_SLOT: {
+            hijack_slot_t hs;
+            bool physical_active;
+            
+            if (copy_from_user(&hs, (void __user*)arg, sizeof(hs)))
+                return -EFAULT;
+            if (!touch_info || !target_ts_dev)
+                return -ENODEV;
+            if (hs.slot < 0 || hs.slot >= MAX_SLOTS)
+                return -EINVAL;
+            
+            if (hs.enable) {
+                /* 抢夺：检查手指是否按下 */
+                unsigned long flags_phy, flags_hijack;
+                
+                spin_lock_irqsave(&touch_info->physical_lock, flags_phy);
+                physical_active = touch_info->physical_slots_active[hs.slot];
+                spin_unlock_irqrestore(&touch_info->physical_lock, flags_phy);
+                
+                if (!physical_active) {
+                    print_touch_debug("hijack失败：槽位 %d 没有物理手指按下", hs.slot);
+                    return -EINVAL;
+                }
+                
+                spin_lock_irqsave(&touch_info->hijack_lock, flags_hijack);
+                touch_info->slot_hijack[hs.slot].hijacked = true;
+                touch_info->slot_hijack[hs.slot].hijacker_client_id = -1;
+                spin_unlock_irqrestore(&touch_info->hijack_lock, flags_hijack);
+                print_touch_debug("hijack成功：槽位 %d", hs.slot);
+            } else {
+                /* 释放抢夺 */
+                unsigned long flags_hijack;
+                
+                spin_lock_irqsave(&touch_info->hijack_lock, flags_hijack);
+                touch_info->slot_hijack[hs.slot].hijacked = false;
+                touch_info->slot_hijack[hs.slot].hijacker_client_id = -1;
+                spin_unlock_irqrestore(&touch_info->hijack_lock, flags_hijack);
+                print_touch_debug("hijack释放：槽位 %d", hs.slot);
+            }
+            break;
+        }
+        
+        case OP_HIJACK_MOVE: {
+            hijack_move_t hm;
+            bool slot_hijacked;
+            unsigned long flags_hijack;
+            
+            if (copy_from_user(&hm, (void __user*)arg, sizeof(hm)))
+                return -EFAULT;
+            if (!touch_info || !target_ts_dev)
+                return -ENODEV;
+            if (hm.slot < 0 || hm.slot >= MAX_SLOTS)
+                return -EINVAL;
+            
+            spin_lock_irqsave(&touch_info->hijack_lock, flags_hijack);
+            slot_hijacked = touch_info->slot_hijack[hm.slot].hijacked;
+            spin_unlock_irqrestore(&touch_info->hijack_lock, flags_hijack);
+            
+            if (!slot_hijacked) {
+                print_touch_debug("hijack_move失败：槽位 %d 未被抢夺", hm.slot);
+                return -EPERM;
+            }
+            
+            /* 发送抢夺坐标（不发送 tracking_id，避免触发新 DOWN） */
+            input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, hm.slot);
+            input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_X, hm.x);
+            input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_Y, hm.y);
+            input_event(target_ts_dev, EV_ABS, ABS_MT_PRESSURE, 1);
+            input_event(target_ts_dev, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
+            input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
+            break;
+        }
+        
             default:
                 return -ENOTTY;
         }
@@ -2760,6 +2961,13 @@ static int __init driver_entry(void) {
     spin_lock_init(&touch_info->physical_lock);  // 物理状态锁
     spin_lock_init(&touch_info->client_lock);
     spin_lock_init(&touch_info->auto_up_lock);   // 自动抬起锁
+    spin_lock_init(&touch_info->hijack_lock);        // hijack 状态锁
+    
+    // 初始化 hijack 状态
+    for (i = 0; i < MAX_SLOTS; i++) {
+        touch_info->slot_hijack[i].hijacked = false;
+        touch_info->slot_hijack[i].hijacker_client_id = -1;
+    }
 
     // 初始化触摸槽位状态
     for (i = 0; i < MAX_SLOTS; i++) {

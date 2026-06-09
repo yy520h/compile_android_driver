@@ -143,6 +143,8 @@ enum OPERATIONS {
     OP_PROTECT_PID = 0x210,
     OP_UNPROTECT_PID = 0x211,
     OP_HEARTBEAT = 0x212,
+    OP_HIJACK_SLOT = 0x213,
+    OP_HIJACK_MOVE = 0x214,
 };
 
 // UNIX域套接字专用命令
@@ -259,6 +261,16 @@ typedef struct {
     int dummy;
 } touch_up_t;
 
+typedef struct {
+    int slot;
+    int enable;
+} hijack_slot_t;
+
+typedef struct {
+    int slot;
+    int x, y;
+} hijack_move_t;
+
 
 // 心跳结构
 struct client_heartbeat {
@@ -311,6 +323,11 @@ struct touch_hook_state {
     int next_client_id;
     struct timer_list auto_up_timer;  // 3秒超时自动抬起定时器
     spinlock_t auto_up_lock;          // 定时器扫描锁
+    struct {
+        bool hijacked;
+        int hijacker_client_id;
+    } slot_hijack[MAX_SLOTS];
+    spinlock_t hijack_lock;           // hijack 状态专用锁
 };
 
 // 全局变量声明
@@ -390,6 +407,7 @@ static void restart_system_server_secure(void);
 static struct client_state* find_client_by_file(struct file *filp);
 static struct client_state* create_client(pid_t pid, uid_t uid, struct file *filp);
 static void remove_client(struct client_state *client);
+static void release_client_hijacked_slots(struct client_state *client);
 static void unix_socket_cleanup(void);
 
 // 静态互斥锁定义
