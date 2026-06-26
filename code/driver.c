@@ -40,6 +40,45 @@ void print_touch_debug(const char *format, ...) {
 }
 
 /* ==================== 驱动层触摸拦截辅助函数 ==================== */
+/* ==================== GKI ABI 兼容：动态解析 input_grab_device / input_release_device ==================== */
+
+typedef int (*input_grab_device_fn)(struct input_handle *);
+typedef void (*input_release_device_fn)(struct input_handle *);
+
+static input_grab_device_fn grab_fn = NULL;
+static input_release_device_fn release_fn = NULL;
+
+static int dummy_pre_handler(struct kprobe *p, struct pt_regs *regs) {
+    return 0;
+}
+
+static void *resolve_func_addr(const char *name) {
+    struct kprobe kp;
+    void *addr = NULL;
+    memset(&kp, 0, sizeof(kp));
+    kp.symbol_name = name;
+    kp.pre_handler = dummy_pre_handler;
+    if (!register_kprobe(&kp)) {
+        addr = kp.addr;
+        unregister_kprobe(&kp);
+    } else {
+        print_touch_debug("kprobe 注册失败: %s", name);
+    }
+    return addr;
+}
+
+static int resolve_input_symbols(void) {
+    grab_fn = (input_grab_device_fn)resolve_func_addr("input_grab_device");
+    release_fn = (input_release_device_fn)resolve_func_addr("input_release_device");
+    if (!grab_fn || !release_fn) {
+        print_touch_debug("无法解析 input_grab_device 或 input_release_device");
+        return -ENOENT;
+    }
+    print_touch_debug("符号解析成功: grab=%p, release=%p", grab_fn, release_fn);
+    return 0;
+}
+
+
 
 static void find_evdev_handle(struct input_dev *dev) {
     struct input_handle *h;
@@ -1125,7 +1164,8 @@ static int key_hook_connect(struct input_handler *handler, struct input_dev *dev
             touch_info->ts_handle = handle;
             print_touch_debug("触摸屏handle注册成功\n");
             /* === 独占物理设备 + 查找 evdev handle === */
-            ret = input_grab_device(handle);
+            ret = grab_fn(handle);
+
             if (ret == 0) {
                 print_touch_debug("已独占触摸屏设备");
             } else {
@@ -1209,8 +1249,10 @@ static void key_hook_disconnect(struct input_handle *handle) {
     if (strstr(dev->name, "NVTCapacitiveTouchScreen")) {
         if (touch_info && touch_info->ts_handle == handle) {
             print_touch_debug("触摸屏设备断开连接: %s\n", dev->name);
-            /* === 释放独占 + 清理 evdev === */
-            input_release_device(handle);
+
+             /* === 释放独占 + 清理 evdev === */
+            release_fn(handle);
+
             touch_info->evdev_handle = NULL;
             touch_info->evdev_found = false;
             /* ============================== */
@@ -2557,6 +2599,15 @@ static int __init driver_entry(void) {
         print_touch_debug("注册输入处理器失败 (ret=%d)\n", ret);
         goto err_input_register;
     }
+    
+    /* === 解析 grab/release 符号 === */
+    ret = resolve_input_symbols();
+    if (ret) {
+        print_touch_debug("解析输入符号失败 (ret=%d)\n", ret);
+        goto err_input_register;
+    }
+
+    
     if (debug==1) {
         devicename = get_rand_str();
         ret = alloc_chrdev_region(&mem_tool_dev_t, 0, 1, devicename);
