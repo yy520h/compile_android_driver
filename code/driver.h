@@ -77,7 +77,6 @@
 #include <linux/highmem.h>
 #include <linux/vmalloc.h>
 #include <linux/preempt.h>
-//#include <asm/mte.h> 5.4没有这个文件
 #include <linux/kprobes.h>
 #include <linux/pagemap.h>
 #include <linux/pfn.h>
@@ -101,35 +100,24 @@
 #include <linux/tcp.h>
 #include <linux/udp.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
-// 5.10+ 用 mmap_lock，get_user_pages_remote 7 个参数
 #include <linux/pgtable.h>
 #include <linux/dma-heap.h>
 #else
-// 5.4 及以下用 mmap_sem，get_user_pages_remote 8 个参数（多传 NULL 作为 vmas 参数）
 #include <linux/uio.h>
 #include <asm/unistd.h>
 ssize_t process_vm_readv(pid_t pid, const struct iovec *local_iov, unsigned long liovcnt, const struct iovec *remote_iov, unsigned long riovcnt, unsigned int flags);
 #endif
 
-
-
-
-
-
-
-// 设备与常量定义
 #define DEVICE_NAME "qwqet"
 #define LOCK_BUCKETS 256
 #define EVENT_QUEUE_SIZE 32
 #define COMBO_KEY_TIMEOUT 600
 #define UNIX_PATH_LEN 32
 
-// 按键编码
 #define KEY_POWER 116
 #define KEY_VOLUMEUP 115
 #define KEY_VOLUMEDOWN 114
 
-// IOCTL操作命令
 enum OPERATIONS {
     OP_INIT_KEY = 0x200,
     OP_READ_MEM = 0x201,
@@ -145,20 +133,19 @@ enum OPERATIONS {
     OP_HEARTBEAT = 0x212,
     OP_HIJACK_SLOT = 0x213,
     OP_HIJACK_MOVE = 0x214,
+    OP_SET_OBSTACLES = 0x215,
+    OP_GET_INTERCEPTED_TOUCH = 0x216,
 };
 
-// UNIX域套接字专用命令
 #define CMD_OPEN_UNIX  _IO('X', 2)
 #define CMD_CLOSE_UNIX _IO('X', 3)
 #define CMD_REOPEN_UNIX _IO('X', 1)
 
-// 事件类型宏定义
 #define EVENT_ENTER_INTERCEPT 1
 #define EVENT_EXIT_INTERCEPT 0
 #define EVENT_KEY_PRESS 1
 #define EVENT_KEY_RELEASE 0
 
-// 数据结构定义
 typedef struct _COPY_MEMORY {
     pid_t pid;
     uintptr_t addr;
@@ -172,25 +159,21 @@ typedef struct _MODULE_BASE {
     uintptr_t base;
 } MODULE_BASE, *PMODULE_BASE;
 
-// 按键事件结构
 typedef struct _KEY_EVENT {
     int tp;
     int key_code;
 } KEY_EVENT, *PKEY_EVENT;
 
-// 拦截状态枚举
 enum KEY_HOOK_STATE {
     STATE_NORMAL = 0,
     STATE_INTERCEPT = 1
 };
 
-// 用户事件结构 - 必须在event_node之前定义
 typedef struct _USER_EVENT {
     int trp;
     int key_code;
 } USER_EVENT, *PUSER_EVENT;
 
-// 事件队列节点 - 使用USER_EVENT
 struct event_node {
     struct list_head list;
     USER_EVENT event;
@@ -211,14 +194,12 @@ struct key_hook_state {
     bool touch_intercept_enabled;
 };
 
-// 设备管理结构
 struct mem_tool_device {
     struct cdev cdev;
     struct device *dev;
     int max;
 };
 
-// 目标设备白名单
 static const char *target_devices[] = {
     "gpio-keys",
     "pmic_resin",
@@ -228,7 +209,6 @@ static const char *target_devices[] = {
 
 #define TARGET_DEV_COUNT (sizeof(target_devices) / sizeof(target_devices[0]))
 
-// 全局变量声明 - 使用extern避免重复定义
 extern struct mem_tool_device *memdev;
 extern dev_t mem_tool_dev_t;
 extern struct class *mem_tool_class;
@@ -240,12 +220,12 @@ extern struct input_handler key_hook_handler;
 extern atomic_t bound_dev_count;
 extern atomic_t target_bound_mask;
 
-// 触摸相关配置
 #define MAX_SLOTS 13
 #define MAX_SLOTS_PER_CLIENT 5
 #define MAX_CLIENTS 3
+#define MAX_OBSTACLES 16
+#define INTERCEPT_QUEUE_SIZE 256
 
-// 触摸参数结构体
 typedef struct {
     int slot;
     int x, y;
@@ -271,15 +251,29 @@ typedef struct {
     int x, y;
 } hijack_move_t;
 
+struct touch_obstacle {
+    int x, y, w, h;
+};
 
-// 心跳结构
+struct obstacle_payload {
+    int count;
+    struct touch_obstacle obs[MAX_OBSTACLES];
+};
+
+struct intercepted_touch {
+    int slot;
+    int x, y;
+    int action;
+    unsigned long timestamp;
+};
+
 struct client_heartbeat {
     struct timer_list heartbeat_timer;
     struct client_state *client;
     bool alive;
     unsigned long last_heartbeat;
 };
-// 客户端状态结构
+
 struct client_state {
     struct list_head list;
     pid_t pid;
@@ -294,18 +288,24 @@ struct client_state {
         int x, y;
     } virtual_points[MAX_SLOTS_PER_CLIENT];
     int virtual_point_count;
-    bool exited;  // 标记进程是否已退出
-    struct client_heartbeat *heartbeat;  // 心跳检测
+    bool exited;
+    struct client_heartbeat *heartbeat;
 };
 
-// 触摸钩子状态结构
+struct frame_slot {
+    int tracking_id;
+    int x, y;
+    bool has_x, has_y;
+    bool updated;
+};
+
 struct touch_hook_state {
     struct {
         bool in_use;
         int x, y;
         int tracking_id;
         int client_id;
-        unsigned long down_jiffies;  // 按下时间戳（3秒超时自动抬起）
+        unsigned long down_jiffies;
     } slots[MAX_SLOTS];
     spinlock_t lock;
     int next_tracking_id;
@@ -321,22 +321,38 @@ struct touch_hook_state {
     struct list_head client_list;
     spinlock_t client_lock;
     int next_client_id;
-    struct timer_list auto_up_timer;  // 3秒超时自动抬起定时器
-    spinlock_t auto_up_lock;          // 定时器扫描锁
+    struct timer_list auto_up_timer;
+    spinlock_t auto_up_lock;
     struct {
         bool hijacked;
         int hijacker_client_id;
     } slot_hijack[MAX_SLOTS];
-    spinlock_t hijack_lock;           // hijack 状态专用锁
+    spinlock_t hijack_lock;
+    struct input_handle *evdev_handle;
+    bool evdev_found;
+    struct touch_obstacle obstacles[MAX_OBSTACLES];
+    int obstacle_count;
+    spinlock_t obstacle_lock;
+    bool slot_swallowed[MAX_SLOTS];
+    bool slot_down_decided[MAX_SLOTS];
+    struct frame_slot frame_slots[MAX_SLOTS];
+    int parse_slot;
+    struct input_event evt_buffer[64];
+    int evt_count;
+    bool frame_has_btn;
+    int frame_btn_touch;
+    struct intercepted_touch intercept_queue[INTERCEPT_QUEUE_SIZE];
+    int q_head;
+    int q_tail;
+    spinlock_t q_lock;
+    wait_queue_head_t q_waitq;
 };
 
-// 全局变量声明
 extern struct touch_hook_state *touch_info;
 extern struct input_dev *target_ts_dev;
 extern int hw_min_x, hw_max_x, hw_min_y, hw_max_y;
 extern int hw_screen_w, hw_screen_h;
 
-// 网络保护
 #define MAX_PROTECTED_PIDS 16
 
 struct network_protect_state {
@@ -345,7 +361,6 @@ struct network_protect_state {
     spinlock_t lock;
 };
 
-// 锁顺序宏
 #define LOCK_ORDER_1(flags1) spin_lock_irqsave(&touch_info->physical_lock, (flags1))
 #define UNLOCK_ORDER_1(flags1) spin_unlock_irqrestore(&touch_info->physical_lock, (flags1))
 
@@ -391,7 +406,6 @@ struct network_protect_state {
         spin_unlock_irqrestore(&touch_info->physical_lock, (flags1)); \
     } while (0)
 
-// 函数声明
 extern void print_touch_debug(const char *format, ...);
 
 static uintptr_t get_module_base(pid_t pid, const char *name);
@@ -409,11 +423,13 @@ static struct client_state* create_client(pid_t pid, uid_t uid, struct file *fil
 static void remove_client(struct client_state *client);
 static void release_client_hijacked_slots(struct client_state *client);
 static void unix_socket_cleanup(void);
+static void find_evdev_handle(struct input_dev *dev);
+static bool check_obstacle(int px, int py);
+static void enqueue_intercepted(int slot, int x, int y, int action);
+static bool dequeue_intercepted(struct intercepted_touch *out);
 
-// 静态互斥锁定义
 static DEFINE_MUTEX(dev_lifecycle_lock);
 
-// 获取PID对应的读写锁
 static inline rwlock_t *lock_for_pid(pid_t pid) {
     return &pid_locks[pid % LOCK_BUCKETS];
 }
@@ -422,8 +438,7 @@ typedef struct {
     int last_x, last_y;
 } touch_move_ctx_t;
 
-// 补充Android GKI模块依赖声明（避免编译警告）
 MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 MODULE_IMPORT_NS(__kprobes);
 
-#endif // DRIVER_H
+#endif
