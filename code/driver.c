@@ -111,6 +111,7 @@ static void cleanup_client_virtual_points(struct client_state *client) {
     unsigned long flags_physical, flags_virtual, flags_slots, flags_client;
     int i, slot;
     bool need_btn_touch_reset = false;
+    bool use_evh = (touch_info && touch_info->evdev_found && touch_info->evdev_handle);
     if (!client || !touch_info || !target_ts_dev) {
         print_touch_debug("cleanup_client_virtual_points: 无效参数");
         return;
@@ -130,8 +131,14 @@ static void cleanup_client_virtual_points(struct client_state *client) {
             touch_info->slots[slot].x = -1;
             touch_info->slots[slot].y = -1;
             touch_info->slots[slot].client_id = -1;
-            input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
-            input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+            if (use_evh) {
+                struct input_handle *evh = touch_info->evdev_handle;
+                evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
+                evh->handler->event(evh, EV_ABS, ABS_MT_TRACKING_ID, -1);
+            } else {
+                input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+                input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+            }
         }
     }
     if (touch_info->virtual_touch_count == 0 &&
@@ -143,11 +150,20 @@ static void cleanup_client_virtual_points(struct client_state *client) {
         touch_info->virtual_touch_count = 0;
     }
     UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
-    if (need_btn_touch_reset) {
-        input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
-        print_touch_debug("发送BTN_TOUCH=0（所有虚拟点清理）");
+    if (use_evh) {
+        struct input_handle *evh = touch_info->evdev_handle;
+        if (need_btn_touch_reset) {
+            evh->handler->event(evh, EV_KEY, BTN_TOUCH, 0);
+            print_touch_debug("发送BTN_TOUCH=0（所有虚拟点清理 via evdev）");
+        }
+        evh->handler->event(evh, EV_SYN, SYN_REPORT, 0);
+    } else {
+        if (need_btn_touch_reset) {
+            input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
+            print_touch_debug("发送BTN_TOUCH=0（所有虚拟点清理）");
+        }
+        input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
     }
-    input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
     for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
         if (client->virtual_points[i].in_use) {
             print_touch_debug("清除客户端虚拟点记录[%d]: 槽位=%d",
@@ -158,9 +174,9 @@ static void cleanup_client_virtual_points(struct client_state *client) {
         }
     }
     client->virtual_point_count = 0;
-    print_touch_debug("客户端 %d 虚拟点清理完成，剩余虚拟点数=%d",
-                     client->client_id, touch_info->virtual_touch_count);
+    print_touch_debug("客户端 %d 虚拟点清理完成，剩余虚拟点数=%d", client->client_id, touch_info->virtual_touch_count);
 }
+
 
 static void release_client_hijacked_slots(struct client_state *client) {
     unsigned long flags;
@@ -282,13 +298,24 @@ static struct client_state* create_client(pid_t pid, uid_t uid, struct file *fil
                         touch_info->slots[slot].y = -1;
                         touch_info->slots[slot].client_id = -1;
                         UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
-                        input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
-                        input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
-                        if (need_btn_touch_reset) {
-                            input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
-                            print_touch_debug("发送BTN_TOUCH=0（清理旧客户端）");
+                        if (touch_info->evdev_found && touch_info->evdev_handle) {
+                            struct input_handle *evh = touch_info->evdev_handle;
+                            evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
+                            evh->handler->event(evh, EV_ABS, ABS_MT_TRACKING_ID, -1);
+                            if (need_btn_touch_reset) {
+                                evh->handler->event(evh, EV_KEY, BTN_TOUCH, 0);
+                                print_touch_debug("发送BTN_TOUCH=0（清理旧客户端 via evdev）");
+                            }
+                            evh->handler->event(evh, EV_SYN, SYN_REPORT, 0);
+                        } else {
+                            input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+                            input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+                            if (need_btn_touch_reset) {
+                                input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
+                                print_touch_debug("发送BTN_TOUCH=0（清理旧客户端）");
+                            }
+                            input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
                         }
-                        input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
                         print_touch_debug("清理旧客户端槽位：槽位=%d, ID=%d, 剩余虚拟点=%d",
                             slot, tracking_id, touch_info->virtual_touch_count);
                     } else {
@@ -1704,7 +1731,7 @@ static int unix_client_handler(void *data) {
     struct client_state *client = NULL;
     static const char *allowed_clients[] = {
         "demo",
-        "KISS",
+        "AImGui",
         NULL
     };
     sk = cli->sk;
@@ -1883,13 +1910,24 @@ static int anon_release(struct inode *inode, struct file *filp) {
                     touch_info->slots[slot].y = -1;
                     touch_info->slots[slot].client_id = -1;
                     UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
-                    input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
-                    input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
-                    if (need_btn_touch_reset) {
-                        input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
-                        print_touch_debug("发送BTN_TOUCH=0（客户端断开）");
+                    if (touch_info->evdev_found && touch_info->evdev_handle) {
+                        struct input_handle *evh = touch_info->evdev_handle;
+                        evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
+                        evh->handler->event(evh, EV_ABS, ABS_MT_TRACKING_ID, -1);
+                        if (need_btn_touch_reset) {
+                            evh->handler->event(evh, EV_KEY, BTN_TOUCH, 0);
+                            print_touch_debug("发送BTN_TOUCH=0（客户端断开 via evdev）");
+                        }
+                        evh->handler->event(evh, EV_SYN, SYN_REPORT, 0);
+                    } else {
+                        input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+                        input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+                        if (need_btn_touch_reset) {
+                            input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
+                            print_touch_debug("发送BTN_TOUCH=0（客户端断开）");
+                        }
+                        input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
                     }
-                    input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
                     print_touch_debug("强制抬起成功：槽位=%d, ID=%d, 剩余虚拟点=%d",
                         slot, tracking_id, touch_info->virtual_touch_count);
                 } else {
@@ -2151,7 +2189,7 @@ static long anon_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
                         sizeof(struct touch_obstacle) * payload.count);
                 spin_unlock_irqrestore(&touch_info->obstacle_lock, flags);
             }
-            print_touch_debug("障碍物已设置: %d 个", payload.count);
+          //  print_touch_debug("障碍物已设置: %d 个", payload.count);
             break;
         }
         case OP_GET_INTERCEPTED_TOUCH: {
@@ -2398,7 +2436,7 @@ static long my_dev_ioctl(struct file* const file, unsigned int const cmd, unsign
                         sizeof(struct touch_obstacle) * payload.count);
                 spin_unlock_irqrestore(&touch_info->obstacle_lock, flags);
             }
-            print_touch_debug("障碍物已设置: %d 个", payload.count);
+        //    print_touch_debug("障碍物已设置: %d 个", payload.count);
             break;
         }
         case OP_GET_INTERCEPTED_TOUCH: {
