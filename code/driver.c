@@ -1823,7 +1823,6 @@ static int unix_client_handler(void *data) {
     }
     /* === 新增：释放驱动自己持有的 fd 和 file 引用，避免泄漏导致 anon_release 永不触发 === */
     __close_fd(current->files, fd);
-    fput(file);
     client = create_client(peer_pid, uid, file);
     if (!client) {
         print_touch_debug("创建客户端状态失败\n");
