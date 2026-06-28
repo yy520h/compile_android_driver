@@ -1564,11 +1564,12 @@ static void key_hook_event(struct input_handle *handle, unsigned int type, unsig
             }
             touch_info->slot_swallowed[slot] = false;
             touch_info->slot_down_decided[slot] = false;
+            touch_info->frame_slots[slot].tracking_id = -2;
         }
         touch_info->frame_slots[slot].updated = false;
         touch_info->frame_slots[slot].has_x = false;
         touch_info->frame_slots[slot].has_y = false;
-        touch_info->frame_slots[slot].tracking_id = -2;
+        /* tracking_id 保留旧值供滑动复用；仅在 UP 时重置为 -2 */
     }
     if (touch_info->frame_has_btn) {
         evh->handler->event(evh, EV_KEY, BTN_TOUCH, touch_info->frame_btn_touch);
