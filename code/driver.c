@@ -2478,6 +2478,16 @@ static int my_dev_open(struct inode *node, struct file *file) {
 static int my_dev_close(struct inode *node, struct file *file) {
     touch_move_ctx_t *mv = file->private_data;
     kfree(mv);
+
+    /* 字符设备关闭时清除障碍物，停止拦截 */
+    if (touch_info) {
+        unsigned long obs_flags;
+        spin_lock_irqsave(&touch_info->obstacle_lock, obs_flags);
+        touch_info->obstacle_count = 0;
+        spin_unlock_irqrestore(&touch_info->obstacle_lock, obs_flags);
+        print_touch_debug("字符设备关闭，清除所有障碍物");
+    }
+
     mutex_lock(&dev_lifecycle_lock);
     device_destroy(mem_tool_class, mem_tool_dev_t);
     print_touch_debug("已删除旧设备文件：%s\n", devicename);
@@ -2492,6 +2502,7 @@ static int my_dev_close(struct inode *node, struct file *file) {
     mutex_unlock(&dev_lifecycle_lock);
     return 0;
 }
+
 
 struct file_operations dev_functions = {
     .owner   = THIS_MODULE,
