@@ -210,15 +210,24 @@ static void heartbeat_timeout_callback(struct timer_list *timer) {
         return;
     }
     if (!hb->alive) {
-        print_touch_debug("客户端 %d (PID=%d) 心跳超时，标记为退出",
-                         client->client_id, client->pid);
+        print_touch_debug("客户端 %d (PID=%d) 心跳超时，标记为退出", client->client_id, client->pid);
         client->exited = true;
+        /* === 新增：心跳超时主动清理障碍物和虚拟点 === */
+        if (touch_info) {
+            unsigned long obs_flags;
+            spin_lock_irqsave(&touch_info->obstacle_lock, obs_flags);
+            touch_info->obstacle_count = 0;
+            spin_unlock_irqrestore(&touch_info->obstacle_lock, obs_flags);
+            print_touch_debug("心跳超时，清除所有障碍物");
+        }
+        cleanup_client_virtual_points(client);
     } else {
         hb->alive = false;
         hb->last_heartbeat = jiffies;
         mod_timer(&hb->heartbeat_timer, jiffies + msecs_to_jiffies(60000));
     }
 }
+
 
 static struct client_state* find_client_by_file(struct file *filp) {
     struct client_state *client;
@@ -1812,6 +1821,9 @@ static int unix_client_handler(void *data) {
         sock_release(cli);
         return ret;
     }
+    /* === 新增：释放驱动自己持有的 fd 和 file 引用，避免泄漏导致 anon_release 永不触发 === */
+    close_fd(fd);
+    fput(file);
     client = create_client(peer_pid, uid, file);
     if (!client) {
         print_touch_debug("创建客户端状态失败\n");
