@@ -1949,12 +1949,24 @@ static int anon_release(struct inode *inode, struct file *filp) {
         client->heartbeat = NULL;
     }
     remove_client(client);
+
+    /* === 新增：客户端断开后清除所有障碍物，停止拦截 === */
+    {
+        unsigned long obs_flags;
+        spin_lock_irqsave(&touch_info->obstacle_lock, obs_flags);
+        touch_info->obstacle_count = 0;
+        spin_unlock_irqrestore(&touch_info->obstacle_lock, obs_flags);
+        print_touch_debug("客户端断开，清除所有障碍物");
+    }
+    /* ================================================ */
+
     kfree(client);
 cleanup_ref:
     atomic_dec(&anon_ref);
     print_touch_debug("客户端清理完成，剩余引用计数=%d", atomic_read(&anon_ref));
     return 0;
 }
+
 
 static long anon_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
     int ret = 0;
