@@ -1388,7 +1388,7 @@ static bool filter_key_event(struct input_handle *handle, unsigned int type, uns
                         }
                     }
                 } else if (value >= 0) {
-                    if (value > 0) {
+                    if (value >= 0) {
                         if (!touch_info->physical_slots_active[slot]) {
                             touch_info->physical_slots_active[slot] = true;
                             touch_info->physical_touch_count++;
@@ -1564,31 +1564,36 @@ static void key_hook_event(struct input_handle *handle, unsigned int type, unsig
             continue;
         if (touch_info->frame_slots[slot].tracking_id >= 0) {
             if (!touch_info->slot_down_decided[slot]) {
-                if (touch_info->frame_slots[slot].has_x && touch_info->frame_slots[slot].has_y) {
+                if (touch_info->frame_slots[slot].has_x &&
+                    touch_info->frame_slots[slot].has_y) {
                     touch_info->slot_swallowed[slot] = check_obstacle(
                         touch_info->frame_slots[slot].x,
                         touch_info->frame_slots[slot].y);
+                    touch_info->slot_down_decided[slot] = true;
                 }
-                touch_info->slot_down_decided[slot] = true;
+                /* 如果坐标不完整，先不决定，等下一帧 */
             }
-            if (touch_info->slot_swallowed[slot]) {
-                enqueue_intercepted(slot,
-                    touch_info->frame_slots[slot].x,
-                    touch_info->frame_slots[slot].y,
-                    touch_info->slot_down_decided[slot] ? 1 : 0);
-            } else {
-                evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
-                evh->handler->event(evh, EV_ABS, ABS_MT_TRACKING_ID,
-                    touch_info->frame_slots[slot].tracking_id);
-                if (touch_info->frame_slots[slot].has_x)
-                    evh->handler->event(evh, EV_ABS, ABS_MT_POSITION_X,
-                        touch_info->frame_slots[slot].x);
-                if (touch_info->frame_slots[slot].has_y)
-                    evh->handler->event(evh, EV_ABS, ABS_MT_POSITION_Y,
-                        touch_info->frame_slots[slot].y);
-                evh->handler->event(evh, EV_ABS, ABS_MT_PRESSURE, 1);
-                evh->handler->event(evh, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
-                any_outside = true;
+            /* 只有已经决定过状态的 slot 才执行拦截或转发 */
+            if (touch_info->slot_down_decided[slot]) {
+                if (touch_info->slot_swallowed[slot]) {
+                    enqueue_intercepted(slot,
+                        touch_info->frame_slots[slot].x,
+                        touch_info->frame_slots[slot].y,
+                        1);
+                } else {
+                    evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
+                    evh->handler->event(evh, EV_ABS, ABS_MT_TRACKING_ID,
+                        touch_info->frame_slots[slot].tracking_id);
+                    if (touch_info->frame_slots[slot].has_x)
+                        evh->handler->event(evh, EV_ABS, ABS_MT_POSITION_X,
+                            touch_info->frame_slots[slot].x);
+                    if (touch_info->frame_slots[slot].has_y)
+                        evh->handler->event(evh, EV_ABS, ABS_MT_POSITION_Y,
+                            touch_info->frame_slots[slot].y);
+                    evh->handler->event(evh, EV_ABS, ABS_MT_PRESSURE, 1);
+                    evh->handler->event(evh, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
+                    any_outside = true;
+                }
             }
         } else if (touch_info->frame_slots[slot].tracking_id == -1) {
             if (touch_info->slot_swallowed[slot]) {
