@@ -112,14 +112,20 @@ static void cleanup_client_virtual_points(struct client_state *client) {
     unsigned long flags_physical, flags_virtual, flags_slots, flags_client;
     int i, slot;
     bool need_btn_touch_reset = false;
-    bool use_evh = (touch_info && touch_info->evdev_found && touch_info->evdev_handle);
+    bool use_evh = false;
+    struct input_handle *evh = NULL;
+    int cleaned_slots[MAX_SLOTS];
+    int cleaned_count = 0;
+
     if (!client || !touch_info || !target_ts_dev) {
         print_touch_debug("cleanup_client_virtual_points: 无效参数");
         return;
     }
-    release_client_hijacked_slots(client);
+
     print_touch_debug("强制清理客户端 %d (PID=%d) 的虚拟点，数量=%d",
                      client->client_id, client->pid, client->virtual_point_count);
+
+    /* 1. 先拿大锁，记录所有要清理的 slot */
     LOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
     for (slot = 0; slot < MAX_SLOTS; slot++) {
         if (touch_info->slots[slot].in_use &&
@@ -132,14 +138,7 @@ static void cleanup_client_virtual_points(struct client_state *client) {
             touch_info->slots[slot].x = -1;
             touch_info->slots[slot].y = -1;
             touch_info->slots[slot].client_id = -1;
-            if (use_evh) {
-                struct input_handle *evh = touch_info->evdev_handle;
-                evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
-                evh->handler->event(evh, EV_ABS, ABS_MT_TRACKING_ID, -1);
-            } else {
-                input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
-                input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
-            }
+            cleaned_slots[cleaned_count++] = slot;
         }
     }
     if (touch_info->virtual_touch_count == 0 &&
@@ -151,20 +150,43 @@ static void cleanup_client_virtual_points(struct client_state *client) {
         touch_info->virtual_touch_count = 0;
     }
     UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
-    if (use_evh) {
-        struct input_handle *evh = touch_info->evdev_handle;
+
+    /* 2. 释放 hijack 必须在 LOCK_ORDER_4 之后，避免与 filter_key_event 死锁 */
+    release_client_hijacked_slots(client);
+
+    /* 3. RCU 保护下发事件 */
+    rcu_read_lock();
+    if (touch_info && touch_info->evdev_found) {
+        evh = rcu_dereference(touch_info->evdev_handle);
+        if (evh) use_evh = true;
+    }
+
+    if (use_evh && evh) {
+        for (i = 0; i < cleaned_count; i++) {
+            slot = cleaned_slots[i];
+            evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
+            evh->handler->event(evh, EV_ABS, ABS_MT_TRACKING_ID, -1);
+        }
         if (need_btn_touch_reset) {
             evh->handler->event(evh, EV_KEY, BTN_TOUCH, 0);
             print_touch_debug("发送BTN_TOUCH=0（所有虚拟点清理 via evdev）");
         }
         evh->handler->event(evh, EV_SYN, SYN_REPORT, 0);
     } else {
+        for (i = 0; i < cleaned_count; i++) {
+            slot = cleaned_slots[i];
+            input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+            input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+        }
         if (need_btn_touch_reset) {
             input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
             print_touch_debug("发送BTN_TOUCH=0（所有虚拟点清理）");
         }
         input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
     }
+    rcu_read_unlock();
+
+    /* 4. 清理客户端侧记录 */
     for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
         if (client->virtual_points[i].in_use) {
             print_touch_debug("清除客户端虚拟点记录[%d]: 槽位=%d",
@@ -175,8 +197,10 @@ static void cleanup_client_virtual_points(struct client_state *client) {
         }
     }
     client->virtual_point_count = 0;
-    print_touch_debug("客户端 %d 虚拟点清理完成，剩余虚拟点数=%d", client->client_id, touch_info->virtual_touch_count);
+    print_touch_debug("客户端 %d 虚拟点清理完成，剩余虚拟点数=%d",
+                     client->client_id, touch_info->virtual_touch_count);
 }
+
 
 
 static void release_client_hijacked_slots(struct client_state *client) {
@@ -644,8 +668,11 @@ static void touch_move(int slot, int x, int y, struct client_state *client) {
     unsigned long now;
     bool slot_in_use;
     int slot_client_id;
+    struct input_handle *evh = NULL;
+
     if (slot < 0 || slot >= MAX_SLOTS || !target_ts_dev)
         return;
+
     LOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
     slot_in_use = touch_info->slots[slot].in_use;
     slot_client_id = touch_info->slots[slot].client_id;
@@ -667,8 +694,13 @@ static void touch_move(int slot, int x, int y, struct client_state *client) {
     touch_info->slots[slot].x = x;
     touch_info->slots[slot].y = y;
     UNLOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
-    if (touch_info && touch_info->evdev_found && touch_info->evdev_handle) {
-        struct input_handle *evh = touch_info->evdev_handle;
+
+    /* ========== RCU 保护 ========== */
+    rcu_read_lock();
+    if (touch_info && touch_info->evdev_found) {
+        evh = rcu_dereference(touch_info->evdev_handle);
+    }
+    if (evh) {
         evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
         evh->handler->event(evh, EV_ABS, ABS_MT_POSITION_X, x);
         evh->handler->event(evh, EV_ABS, ABS_MT_POSITION_Y, y);
@@ -683,7 +715,10 @@ static void touch_move(int slot, int x, int y, struct client_state *client) {
         input_event(target_ts_dev, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
         input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
     }
+    rcu_read_unlock();
+    /* ============================== */
 }
+
 
 static int input_mt_reinit_slots(struct input_dev *dev, unsigned int new_num_slots) {
     int ret;
@@ -1206,6 +1241,7 @@ static int key_hook_connect(struct input_handler *handler, struct input_dev *dev
 
             /* ======================================== */
             mutex_lock(&mt_replace_lock);
+            
             old_slots = dev->mt->num_slots;
             new_slots = old_slots + 3;
             old_size = sizeof(struct input_mt) + old_slots * sizeof(struct input_mt_slot);
@@ -1214,14 +1250,15 @@ static int key_hook_connect(struct input_handler *handler, struct input_dev *dev
             if (!new_mt) {
                 print_touch_debug("扩 mt 内存失败\n");
             } else {
+                spin_lock_irq(&dev->event_lock);
                 memcpy(new_mt, dev->mt, old_size);
                 new_mt->num_slots = new_slots;
                 memset(&new_mt->slots[old_slots], 0, 3 * sizeof(struct input_mt_slot));
                 kfree(dev->mt);
                 dev->mt = new_mt;
                 dev->absinfo[ABS_MT_SLOT].maximum = new_slots - 1;
-                print_touch_debug("slot 已扩大 %d -> %d，安全区 %d-%d\n",
-                       old_slots, new_slots, old_slots, new_slots-1);
+                spin_unlock_irq(&dev->event_lock);
+                print_touch_debug("slot 已扩大 %d -> %d，安全区 %d-%d\n", old_slots, new_slots, old_slots, new_slots-1);
             }
             mutex_unlock(&mt_replace_lock);
             abs_x = &dev->absinfo[ABS_MT_POSITION_X];
