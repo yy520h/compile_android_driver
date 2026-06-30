@@ -20,6 +20,13 @@ int hw_min_x = 0, hw_max_x = 0, hw_min_y = 0, hw_max_y = 0;
 int hw_screen_w = 0, hw_screen_h = 0;
 
 static struct input_dev *original_ts_dev = NULL;
+bool g_is_virtual_event = false;
+
+static void virtual_input_event(struct input_dev *dev, unsigned int type, unsigned int code, int value) {
+    g_is_virtual_event = true;
+    input_event(dev, type, code, value);
+    g_is_virtual_event = false;
+}
 
 void print_touch_debug(const char *format, ...) {
     char buf[512];
@@ -112,8 +119,6 @@ static void cleanup_client_virtual_points(struct client_state *client) {
     unsigned long flags_physical, flags_virtual, flags_slots, flags_client;
     int i, slot;
     bool need_btn_touch_reset = false;
-    bool use_evh = false;
-    struct input_handle *evh = NULL;
     int cleaned_slots[MAX_SLOTS];
     int cleaned_count = 0;
 
@@ -121,6 +126,8 @@ static void cleanup_client_virtual_points(struct client_state *client) {
         print_touch_debug("cleanup_client_virtual_points: 无效参数");
         return;
     }
+
+    release_client_hijacked_slots(client);
 
     print_touch_debug("强制清理客户端 %d (PID=%d) 的虚拟点，数量=%d",
                      client->client_id, client->pid, client->virtual_point_count);
@@ -151,42 +158,19 @@ static void cleanup_client_virtual_points(struct client_state *client) {
     }
     UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
 
-    /* 2. 释放 hijack 必须在 LOCK_ORDER_4 之后，避免与 filter_key_event 死锁 */
-    release_client_hijacked_slots(client);
-
-    /* 3. RCU 保护下发事件 */
-    rcu_read_lock();
-    if (touch_info && touch_info->evdev_found) {
-        evh = rcu_dereference(touch_info->evdev_handle);
-        if (evh) use_evh = true;
+    /* 2. 统一走 virtual_input_event 发送清理（标记保护） */
+    for (i = 0; i < cleaned_count; i++) {
+        slot = cleaned_slots[i];
+        virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+        virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
     }
-
-    if (use_evh && evh) {
-        for (i = 0; i < cleaned_count; i++) {
-            slot = cleaned_slots[i];
-            evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
-            evh->handler->event(evh, EV_ABS, ABS_MT_TRACKING_ID, -1);
-        }
-        if (need_btn_touch_reset) {
-            evh->handler->event(evh, EV_KEY, BTN_TOUCH, 0);
-            print_touch_debug("发送BTN_TOUCH=0（所有虚拟点清理 via evdev）");
-        }
-        evh->handler->event(evh, EV_SYN, SYN_REPORT, 0);
-    } else {
-        for (i = 0; i < cleaned_count; i++) {
-            slot = cleaned_slots[i];
-            input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
-            input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
-        }
-        if (need_btn_touch_reset) {
-            input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
-            print_touch_debug("发送BTN_TOUCH=0（所有虚拟点清理）");
-        }
-        input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
+    if (need_btn_touch_reset) {
+        virtual_input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
+        print_touch_debug("发送BTN_TOUCH=0（所有虚拟点清理）");
     }
-    rcu_read_unlock();
+    virtual_input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
 
-    /* 4. 清理客户端侧记录 */
+    /* 3. 清理客户端侧记录 */
     for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
         if (client->virtual_points[i].in_use) {
             print_touch_debug("清除客户端虚拟点记录[%d]: 槽位=%d",
@@ -200,6 +184,7 @@ static void cleanup_client_virtual_points(struct client_state *client) {
     print_touch_debug("客户端 %d 虚拟点清理完成，剩余虚拟点数=%d",
                      client->client_id, touch_info->virtual_touch_count);
 }
+
 
 
 
@@ -316,7 +301,7 @@ static struct client_state* create_client(pid_t pid, uid_t uid, struct file *fil
                     slot_in_use = touch_info->slots[slot].in_use;
                     slot_client_id = touch_info->slots[slot].client_id;
                     if (slot_in_use && slot_client_id == existing_client->client_id) {
-                        need_btn_touch_reset = false;
+                        bool need_btn_touch_reset = false;
                         touch_info->virtual_touch_count--;
                         if (touch_info->virtual_touch_count <= 0) {
                             touch_info->virtual_touch_count = 0;
@@ -332,24 +317,13 @@ static struct client_state* create_client(pid_t pid, uid_t uid, struct file *fil
                         touch_info->slots[slot].y = -1;
                         touch_info->slots[slot].client_id = -1;
                         UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
-                        if (touch_info->evdev_found && touch_info->evdev_handle) {
-                            struct input_handle *evh = touch_info->evdev_handle;
-                            evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
-                            evh->handler->event(evh, EV_ABS, ABS_MT_TRACKING_ID, -1);
-                            if (need_btn_touch_reset) {
-                                evh->handler->event(evh, EV_KEY, BTN_TOUCH, 0);
-                                print_touch_debug("发送BTN_TOUCH=0（清理旧客户端 via evdev）");
-                            }
-                            evh->handler->event(evh, EV_SYN, SYN_REPORT, 0);
-                        } else {
-                            input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
-                            input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
-                            if (need_btn_touch_reset) {
-                                input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
-                                print_touch_debug("发送BTN_TOUCH=0（清理旧客户端）");
-                            }
-                            input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
+                        virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+                        virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+                        if (need_btn_touch_reset) {
+                            virtual_input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
+                            print_touch_debug("发送BTN_TOUCH=0（清理旧客户端）");
                         }
+                        virtual_input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
                         print_touch_debug("清理旧客户端槽位：槽位=%d, ID=%d, 剩余虚拟点=%d",
                             slot, tracking_id, touch_info->virtual_touch_count);
                     } else {
@@ -431,7 +405,6 @@ static void touch_down(int slot, int x, int y, struct client_state *client) {
     int old_virtual_count;
     int client_slot = -1;
     int i;
-    struct input_handle *evh = NULL;
 
     if (!client) {
         print_touch_debug("触摸按下失败：客户端无效");
@@ -449,7 +422,7 @@ static void touch_down(int slot, int x, int y, struct client_state *client) {
         print_touch_debug("触摸按下失败：无效槽位=%d", slot);
         return;
     }
-    if (client && client->virtual_point_count >= MAX_SLOTS_PER_CLIENT) {
+    if (client->virtual_point_count >= MAX_SLOTS_PER_CLIENT) {
         print_touch_debug("客户端已达到最大虚拟点数限制");
         return;
     }
@@ -465,7 +438,7 @@ static void touch_down(int slot, int x, int y, struct client_state *client) {
     touch_info->slots[slot].x = x;
     touch_info->slots[slot].y = y;
     touch_info->slots[slot].tracking_id = tracking_id;
-    touch_info->slots[slot].client_id = client ? client->client_id : -1;
+    touch_info->slots[slot].client_id = client->client_id;
     touch_info->slots[slot].down_jiffies = jiffies + msecs_to_jiffies(60000);
     old_virtual_count = touch_info->virtual_touch_count;
     touch_info->virtual_touch_count++;
@@ -473,59 +446,36 @@ static void touch_down(int slot, int x, int y, struct client_state *client) {
     if (old_virtual_count == 0 && touch_info->physical_touch_count == 0) {
         need_btn_touch = true;
     }
-    if (client) {
-        for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
-            if (!client->virtual_points[i].in_use) {
-                client->virtual_points[i].in_use = true;
-                client->virtual_points[i].slot = slot;
-                client->virtual_points[i].tracking_id = tracking_id;
-                client->virtual_points[i].x = x;
-                client->virtual_points[i].y = y;
-                client->virtual_point_count++;
-                client_slot = i;
-                break;
-            }
+    for (i = 0; i < MAX_SLOTS_PER_CLIENT; i++) {
+        if (!client->virtual_points[i].in_use) {
+            client->virtual_points[i].in_use = true;
+            client->virtual_points[i].slot = slot;
+            client->virtual_points[i].tracking_id = tracking_id;
+            client->virtual_points[i].x = x;
+            client->virtual_points[i].y = y;
+            client->virtual_point_count++;
+            client_slot = i;
+            break;
         }
     }
     UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
 
-    /* ========== RCU 保护 evdev_handle 访问 ========== */
-    rcu_read_lock();
-    if (touch_info && touch_info->evdev_found) {
-        evh = rcu_dereference(touch_info->evdev_handle);
+    /* 虚拟触摸：统一走 input_event（标记保护，grab 自动进入 filter/event） */
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, tracking_id);
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_X, x);
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_Y, y);
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_PRESSURE, 1);
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_TOOL_TYPE, 0);
+    if (need_btn_touch) {
+        virtual_input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 1);
+        print_touch_debug("发送BTN_TOUCH=1");
     }
-    if (evh) {
-        evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
-        evh->handler->event(evh, EV_ABS, ABS_MT_TRACKING_ID, tracking_id);
-        evh->handler->event(evh, EV_ABS, ABS_MT_POSITION_X, x);
-        evh->handler->event(evh, EV_ABS, ABS_MT_POSITION_Y, y);
-        evh->handler->event(evh, EV_ABS, ABS_MT_PRESSURE, 1);
-        evh->handler->event(evh, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
-        evh->handler->event(evh, EV_ABS, ABS_MT_TOOL_TYPE, 0);
-        if (need_btn_touch) {
-            evh->handler->event(evh, EV_KEY, BTN_TOUCH, 1);
-            print_touch_debug("发送BTN_TOUCH=1 (via evdev)");
-        }
-        evh->handler->event(evh, EV_SYN, SYN_REPORT, 0);
-    } else {
-        input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
-        input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, tracking_id);
-        input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_X, x);
-        input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_Y, y);
-        input_event(target_ts_dev, EV_ABS, ABS_MT_PRESSURE, 1);
-        input_event(target_ts_dev, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
-        input_event(target_ts_dev, EV_ABS, ABS_MT_TOOL_TYPE, 0);
-        if (need_btn_touch) {
-            input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 1);
-            print_touch_debug("发送BTN_TOUCH=1");
-        }
-        input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
-    }
-    rcu_read_unlock();
-    /* ================================================ */
+    virtual_input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
 
     print_touch_debug("虚拟触摸按下：客户端=%d, 槽位=%d, ID=%d, 坐标=(%d,%d), 虚拟点数=%d",
-        client ? client->client_id : -1, slot, tracking_id, x, y,
+        client->client_id, slot, tracking_id, x, y,
         touch_info->virtual_touch_count);
     if (!timer_pending(&touch_info->auto_up_timer))
         mod_timer(&touch_info->auto_up_timer, jiffies + msecs_to_jiffies(500));
@@ -539,7 +489,6 @@ static void touch_up(int slot, struct client_state *client) {
     bool was_in_use = false;
     bool owned_by_client = false;
     int i;
-    struct input_handle *evh = NULL;
 
     if (slot < 0 || slot >= MAX_SLOTS || !target_ts_dev)
         return;
@@ -583,30 +532,14 @@ static void touch_up(int slot, struct client_state *client) {
     }
     UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
 
-    /* ========== RCU 保护 evdev_handle 访问 ========== */
-    rcu_read_lock();
-    if (touch_info && touch_info->evdev_found) {
-        evh = rcu_dereference(touch_info->evdev_handle);
+    /* 虚拟触摸：统一走 input_event（标记保护） */
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+    if (need_btn_touch_reset) {
+        virtual_input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
+        print_touch_debug("发送BTN_TOUCH=0");
     }
-    if (evh) {
-        evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
-        evh->handler->event(evh, EV_ABS, ABS_MT_TRACKING_ID, -1);
-        if (need_btn_touch_reset) {
-            evh->handler->event(evh, EV_KEY, BTN_TOUCH, 0);
-            print_touch_debug("发送BTN_TOUCH=0 (via evdev)");
-        }
-        evh->handler->event(evh, EV_SYN, SYN_REPORT, 0);
-    } else {
-        input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
-        input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
-        if (need_btn_touch_reset) {
-            input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
-            print_touch_debug("发送BTN_TOUCH=0");
-        }
-        input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
-    }
-    rcu_read_unlock();
-    /* ================================================ */
+    virtual_input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
 
     if (was_in_use && owned_by_client) {
         print_touch_debug("虚拟触摸抬起：客户端=%d, 槽位=%d, ID=%d, 剩余=%d",
@@ -614,6 +547,7 @@ static void touch_up(int slot, struct client_state *client) {
             touch_info->virtual_touch_count);
     }
 }
+
 
 
 static void touch_auto_up_callback(struct timer_list *timer) {
@@ -668,7 +602,6 @@ static void touch_move(int slot, int x, int y, struct client_state *client) {
     unsigned long now;
     bool slot_in_use;
     int slot_client_id;
-    struct input_handle *evh = NULL;
 
     if (slot < 0 || slot >= MAX_SLOTS || !target_ts_dev)
         return;
@@ -695,29 +628,15 @@ static void touch_move(int slot, int x, int y, struct client_state *client) {
     touch_info->slots[slot].y = y;
     UNLOCK_ORDER_3(flags_physical, flags_virtual, flags_slots);
 
-    /* ========== RCU 保护 ========== */
-    rcu_read_lock();
-    if (touch_info && touch_info->evdev_found) {
-        evh = rcu_dereference(touch_info->evdev_handle);
-    }
-    if (evh) {
-        evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
-        evh->handler->event(evh, EV_ABS, ABS_MT_POSITION_X, x);
-        evh->handler->event(evh, EV_ABS, ABS_MT_POSITION_Y, y);
-        evh->handler->event(evh, EV_ABS, ABS_MT_PRESSURE, 1);
-        evh->handler->event(evh, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
-        evh->handler->event(evh, EV_SYN, SYN_REPORT, 0);
-    } else {
-        input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
-        input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_X, x);
-        input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_Y, y);
-        input_event(target_ts_dev, EV_ABS, ABS_MT_PRESSURE, 1);
-        input_event(target_ts_dev, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
-        input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
-    }
-    rcu_read_unlock();
-    /* ============================== */
+    /* 虚拟触摸：统一走 input_event（标记保护） */
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_X, x);
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_POSITION_Y, y);
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_PRESSURE, 1);
+    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_TOUCH_MAJOR, 5);
+    virtual_input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
 }
+
 
 
 static int input_mt_reinit_slots(struct input_dev *dev, unsigned int new_num_slots) {
@@ -1237,7 +1156,7 @@ static int key_hook_connect(struct input_handler *handler, struct input_dev *dev
             rcu_assign_pointer(dev->grab, handle);
             mutex_unlock(&dev->mutex);
             print_touch_debug("已独占触摸屏设备");
-            find_evdev_handle(dev);
+            /* find_evdev_handle(dev); */  /* 已移除：不再缓存 evdev_handle */
 
             /* ======================================== */
             mutex_lock(&mt_replace_lock);
@@ -1321,18 +1240,15 @@ static void key_hook_disconnect(struct input_handle *handle) {
         if (touch_info && touch_info->ts_handle == handle) {
             print_touch_debug("触摸屏设备断开连接: %s\n", dev->name);
 
-            /* === 释放独占 + 清理 evdev === */
+            /* === 释放独占 === */
             mutex_lock(&dev->mutex);
             if (rcu_access_pointer(dev->grab) == handle) {
                 rcu_assign_pointer(dev->grab, NULL);
                 print_touch_debug("已释放触摸屏独占");
             }
             mutex_unlock(&dev->mutex);
-
-            synchronize_rcu();   /* 等待所有 RCU 读者退出 */
-
-            RCU_INIT_POINTER(touch_info->evdev_handle, NULL);
-            touch_info->evdev_found = false;
+            synchronize_rcu();
+            /* 不再清理 evdev_handle（已弃用缓存指针） */
             /* ============================== */
 
             touch_info->ts_handle = NULL;
@@ -1398,6 +1314,10 @@ static bool filter_key_event(struct input_handle *handle, unsigned int type, uns
     int intercepted_slots[MAX_SLOTS] = {0};
     int intercepted_count = 0;
     bool hijacked = false;
+        /* 虚拟触摸事件：直接放行，不更新物理状态 */
+    if (g_is_virtual_event)
+        return false;
+
     if (dev && dev->name && strstr(dev->name, "NVTCapacitiveTouchScreen")) {
         if (type == EV_ABS && code == ABS_MT_SLOT) {
             LOCK_ORDER_1(flags_physical);
@@ -2009,24 +1929,13 @@ static int anon_release(struct inode *inode, struct file *filp) {
                     touch_info->slots[slot].y = -1;
                     touch_info->slots[slot].client_id = -1;
                     UNLOCK_ORDER_4(flags_physical, flags_virtual, flags_slots, flags_client);
-                    if (touch_info->evdev_found && touch_info->evdev_handle) {
-                        struct input_handle *evh = touch_info->evdev_handle;
-                        evh->handler->event(evh, EV_ABS, ABS_MT_SLOT, slot);
-                        evh->handler->event(evh, EV_ABS, ABS_MT_TRACKING_ID, -1);
-                        if (need_btn_touch_reset) {
-                            evh->handler->event(evh, EV_KEY, BTN_TOUCH, 0);
-                            print_touch_debug("发送BTN_TOUCH=0（客户端断开 via evdev）");
-                        }
-                        evh->handler->event(evh, EV_SYN, SYN_REPORT, 0);
-                    } else {
-                        input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
-                        input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
-                        if (need_btn_touch_reset) {
-                            input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
-                            print_touch_debug("发送BTN_TOUCH=0（客户端断开）");
-                        }
-                        input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
+                    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_SLOT, slot);
+                    virtual_input_event(target_ts_dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+                    if (need_btn_touch_reset) {
+                        virtual_input_event(target_ts_dev, EV_KEY, BTN_TOUCH, 0);
+                        print_touch_debug("发送BTN_TOUCH=0（客户端断开）");
                     }
+                    virtual_input_event(target_ts_dev, EV_SYN, SYN_REPORT, 0);
                     print_touch_debug("强制抬起成功：槽位=%d, ID=%d, 剩余虚拟点=%d",
                         slot, tracking_id, touch_info->virtual_touch_count);
                 } else {
@@ -2034,6 +1943,7 @@ static int anon_release(struct inode *inode, struct file *filp) {
                     print_touch_debug("槽位=%d 状态不匹配(in_use=%d, client_id=%d)，跳过",
                         slot, slot_in_use, slot_client_id);
                 }
+
             }
             client->virtual_points[i].in_use = false;
             client->virtual_points[i].slot = -1;
